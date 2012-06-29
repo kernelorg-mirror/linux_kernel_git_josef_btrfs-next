@@ -1405,6 +1405,10 @@ static noinline int btrfs_ioctl_snap_create_transid(struct file *file,
 	if (ret)
 		goto out;
 
+	ret = mnt_want_write_file(file);
+	if (ret)
+		goto out;
+
 	namelen = strlen(name);
 	if (strchr(name, '/')) {
 		ret = -EINVAL;
