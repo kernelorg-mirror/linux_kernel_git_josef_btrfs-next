@@ -274,16 +274,21 @@ static int process_one_buffer(struct btrfs_root *log,
 			      struct extent_buffer *eb,
 			      struct walk_control *wc, u64 gen)
 {
+	int wait = WAIT_PAGE_LOCK;
+
 	if (wc->pin)
 		btrfs_pin_extent_for_log_replay(wc->trans,
 						log->fs_info->extent_root,
 						eb->start, eb->len);
 
 	if (btrfs_buffer_uptodate(eb, gen, 0)) {
-		if (wc->write)
-			btrfs_write_tree_block(eb);
-		if (wc->wait)
-			btrfs_wait_tree_block_writeback(eb);
+		if (wc->write) {
+			if (wc->wait)
+				wait = WAIT_COMPLETE;
+			write_one_extent_buffer(eb, wait, 0);
+		} else if (wc->wait) {
+			wait_on_extent_buffer(eb);
+		}
 	}
 	return 0;
 }
@@ -1766,16 +1771,18 @@ static noinline int walk_down_log_tree(struct btrfs_trans_handle *trans,
 				btrfs_tree_lock(next);
 				btrfs_set_lock_blocking(next);
 				clean_tree_block(trans, root, next);
-				btrfs_wait_tree_block_writeback(next);
+				wait_on_extent_buffer(next);
 				btrfs_tree_unlock(next);
 
 				WARN_ON(root_owner !=
 					BTRFS_TREE_LOG_OBJECTID);
 				ret = btrfs_free_and_pin_reserved_extent(root,
 							 bytenr, blocksize);
-				BUG_ON(ret); /* -ENOMEM or logic errors */
+				BUG_ON(ret);
+				free_extent_buffer_stale(next);
+			} else {
+				free_extent_buffer(next);
 			}
-			free_extent_buffer(next);
 			continue;
 		}
 		ret = btrfs_read_buffer(next, ptr_gen);
@@ -1785,8 +1792,12 @@ static noinline int walk_down_log_tree(struct btrfs_trans_handle *trans,
 		}
 
 		WARN_ON(*level <= 0);
-		if (path->nodes[*level-1])
-			free_extent_buffer(path->nodes[*level-1]);
+		if (path->nodes[*level-1]) {
+			if (wc->free)
+				free_extent_buffer_stale(path->nodes[*level-1]);
+			else
+				free_extent_buffer(path->nodes[*level-1]);
+		}
 		path->nodes[*level-1] = next;
 		*level = btrfs_header_level(next);
 		path->slots[*level] = 0;
@@ -1839,7 +1850,7 @@ static noinline int walk_up_log_tree(struct btrfs_trans_handle *trans,
 				btrfs_tree_lock(next);
 				btrfs_set_lock_blocking(next);
 				clean_tree_block(trans, root, next);
-				btrfs_wait_tree_block_writeback(next);
+				wait_on_extent_buffer(next);
 				btrfs_tree_unlock(next);
 
 				WARN_ON(root_owner != BTRFS_TREE_LOG_OBJECTID);
@@ -1847,8 +1858,10 @@ static noinline int walk_up_log_tree(struct btrfs_trans_handle *trans,
 						path->nodes[*level]->start,
 						path->nodes[*level]->len);
 				BUG_ON(ret);
+				free_extent_buffer_stale(path->nodes[*level]);
+			} else {
+				free_extent_buffer(path->nodes[*level]);
 			}
-			free_extent_buffer(path->nodes[*level]);
 			path->nodes[*level] = NULL;
 			*level = i + 1;
 		}
@@ -1913,7 +1926,7 @@ static int walk_log_tree(struct btrfs_trans_handle *trans,
 			btrfs_tree_lock(next);
 			btrfs_set_lock_blocking(next);
 			clean_tree_block(trans, log, next);
-			btrfs_wait_tree_block_writeback(next);
+			wait_on_extent_buffer(next);
 			btrfs_tree_unlock(next);
 
 			WARN_ON(log->root_key.objectid !=
@@ -1927,7 +1940,10 @@ static int walk_log_tree(struct btrfs_trans_handle *trans,
 out:
 	for (i = 0; i <= orig_level; i++) {
 		if (path->nodes[i]) {
-			free_extent_buffer(path->nodes[i]);
+			if (wc->free)
+				free_extent_buffer_stale(path->nodes[i]);
+			else
+				free_extent_buffer(path->nodes[i]);
 			path->nodes[i] = NULL;
 		}
 	}
@@ -2217,7 +2233,7 @@ static void free_log_tree(struct btrfs_trans_handle *trans,
 				  EXTENT_DIRTY | EXTENT_NEW, GFP_NOFS);
 	}
 
-	free_extent_buffer(log->node);
+	free_extent_buffer_stale(log->node);
 	kfree(log);
 }
 

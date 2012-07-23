@@ -147,7 +147,10 @@ noinline void btrfs_release_path(struct btrfs_path *p)
 			btrfs_tree_unlock_rw(p->nodes[i], p->locks[i]);
 			p->locks[i] = 0;
 		}
-		free_extent_buffer(p->nodes[i]);
+		if (unlikely(p->search_commit_root))
+			free_extent_buffer_stale(p->nodes[i]);
+		else
+			free_extent_buffer(p->nodes[i]);
 		p->nodes[i] = NULL;
 	}
 }

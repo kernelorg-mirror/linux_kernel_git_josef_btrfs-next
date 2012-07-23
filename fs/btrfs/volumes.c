@@ -4557,7 +4557,7 @@ int btrfs_read_sys_array(struct btrfs_root *root)
 					  BTRFS_SUPER_INFO_SIZE);
 	if (!sb)
 		return -ENOMEM;
-	btrfs_set_buffer_uptodate(sb);
+	set_extent_buffer_uptodate(sb);
 	btrfs_set_buffer_lockdep_class(root->root_key.objectid, sb, 0);
 	/*
 	 * The sb extent buffer is artifical and just used to read the system array.

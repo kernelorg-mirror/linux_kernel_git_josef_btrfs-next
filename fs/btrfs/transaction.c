@@ -107,6 +107,7 @@ loop:
 	}
 
 	atomic_set(&cur_trans->num_writers, 1);
+
 	cur_trans->num_joined = 0;
 	init_waitqueue_head(&cur_trans->writer_wait);
 	init_waitqueue_head(&cur_trans->commit_wait);
@@ -149,8 +150,8 @@ loop:
 
 	INIT_LIST_HEAD(&cur_trans->pending_snapshots);
 	list_add_tail(&cur_trans->list, &fs_info->trans_list);
-	extent_io_tree_init(&cur_trans->dirty_pages,
-			     fs_info->btree_inode->i_mapping);
+	extent_io_tree_init(&cur_trans->dirty_pages, NULL);
+	mutex_init(&cur_trans->dirty_pages_mutex);
 	fs_info->generation++;
 	cur_trans->transid = fs_info->generation;
 	fs_info->running_transaction = cur_trans;
@@ -249,21 +250,21 @@ int btrfs_record_root_in_trans(struct btrfs_trans_handle *trans,
  * when this is done, it is safe to start a new transaction, but the current
  * transaction might not be fully on disk.
  */
-static void wait_current_trans(struct btrfs_root *root)
+void btrfs_wait_current_trans(struct btrfs_fs_info *fs_info)
 {
 	struct btrfs_transaction *cur_trans;
 
-	spin_lock(&root->fs_info->trans_lock);
-	cur_trans = root->fs_info->running_transaction;
+	spin_lock(&fs_info->trans_lock);
+	cur_trans = fs_info->running_transaction;
 	if (cur_trans && cur_trans->blocked) {
 		atomic_inc(&cur_trans->use_count);
-		spin_unlock(&root->fs_info->trans_lock);
+		spin_unlock(&fs_info->trans_lock);
 
-		wait_event(root->fs_info->transaction_wait,
+		wait_event(fs_info->transaction_wait,
 			   !cur_trans->blocked);
 		put_transaction(cur_trans);
 	} else {
-		spin_unlock(&root->fs_info->trans_lock);
+		spin_unlock(&fs_info->trans_lock);
 	}
 }
 
@@ -336,12 +337,12 @@ again:
 		return ERR_PTR(-ENOMEM);
 
 	if (may_wait_transaction(root, type))
-		wait_current_trans(root);
+		btrfs_wait_current_trans(root->fs_info);
 
 	do {
 		ret = join_transaction(root, type == TRANS_JOIN_NOLOCK);
 		if (ret == -EBUSY)
-			wait_current_trans(root);
+			btrfs_wait_current_trans(root->fs_info);
 	} while (ret == -EBUSY);
 
 	if (ret < 0) {
@@ -468,7 +469,7 @@ out:
 void btrfs_throttle(struct btrfs_root *root)
 {
 	if (!atomic_read(&root->fs_info->open_ioctl_trans))
-		wait_current_trans(root);
+		btrfs_wait_current_trans(root->fs_info);
 }
 
 static int should_end_transaction(struct btrfs_trans_handle *trans,
@@ -643,7 +644,6 @@ int btrfs_write_marked_extents(struct btrfs_root *root,
 {
 	int err = 0;
 	int werr = 0;
-	struct address_space *mapping = root->fs_info->btree_inode->i_mapping;
 	u64 start = 0;
 	u64 end;
 
@@ -651,11 +651,9 @@ int btrfs_write_marked_extents(struct btrfs_root *root,
 				      mark)) {
 		convert_extent_bit(dirty_pages, start, end, EXTENT_NEED_WAIT, mark,
 				   GFP_NOFS);
-		err = filemap_fdatawrite_range(mapping, start, end);
+		err = write_extent_buffer_range(root, start, end, WAIT_PAGE_LOCK);
 		if (err)
-			werr = err;
-		cond_resched();
-		start = end + 1;
+			break;
 	}
 	if (err)
 		werr = err;
@@ -672,23 +670,33 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 			      struct extent_io_tree *dirty_pages, int mark)
 {
 	int err = 0;
-	int werr = 0;
-	struct address_space *mapping = root->fs_info->btree_inode->i_mapping;
 	u64 start = 0;
 	u64 end;
 
 	while (!find_first_extent_bit(dirty_pages, start, &start, &end,
 				      EXTENT_NEED_WAIT)) {
 		clear_extent_bits(dirty_pages, start, end, EXTENT_NEED_WAIT, GFP_NOFS);
-		err = filemap_fdatawait_range(mapping, start, end);
-		if (err)
-			werr = err;
-		cond_resched();
-		start = end + 1;
+		while (start < end) {
+			struct extent_buffer *eb;
+
+			eb = find_extent_buffer_no_ref(root->fs_info, start);
+			if (!eb) {
+				/*
+				 * This could happen if the eb got free'd up
+				 * after it was written out by the shrinker.
+				 */
+				start += PAGE_CACHE_SIZE;
+				continue;
+			}
+			wait_on_extent_buffer(eb);
+			if (test_bit(EXTENT_BUFFER_IOERR, &eb->bflags))
+				err = -EIO;
+			start = eb->start + eb->len;
+			free_extent_buffer(eb);
+			cond_resched();
+		}
 	}
-	if (err)
-		werr = err;
-	return werr;
+	return err;
 }
 
 /*
@@ -715,14 +723,17 @@ int btrfs_write_and_wait_marked_extents(struct btrfs_root *root,
 int btrfs_write_and_wait_transaction(struct btrfs_trans_handle *trans,
 				     struct btrfs_root *root)
 {
-	if (!trans || !trans->transaction) {
-		struct inode *btree_inode;
-		btree_inode = root->fs_info->btree_inode;
-		return filemap_write_and_wait(btree_inode->i_mapping);
-	}
-	return btrfs_write_and_wait_marked_extents(root,
+	int ret;
+
+	if (!trans || !trans->transaction)
+		return 0;
+
+	mutex_lock(&trans->transaction->dirty_pages_mutex);
+	ret = btrfs_write_and_wait_marked_extents(root,
 					   &trans->transaction->dirty_pages,
 					   EXTENT_DIRTY);
+	mutex_unlock(&trans->transaction->dirty_pages_mutex);
+	return ret;
 }
 
 /*

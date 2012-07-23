@@ -38,6 +38,7 @@ struct btrfs_transaction {
 	int commit_done;
 	int blocked;
 	struct list_head list;
+	struct mutex dirty_pages_mutex;
 	struct extent_io_tree dirty_pages;
 	unsigned long start_time;
 	wait_queue_head_t writer_wait;
@@ -100,6 +101,7 @@ struct btrfs_trans_handle *btrfs_join_transaction(struct btrfs_root *root);
 struct btrfs_trans_handle *btrfs_join_transaction_nolock(struct btrfs_root *root);
 struct btrfs_trans_handle *btrfs_start_ioctl_transaction(struct btrfs_root *root);
 int btrfs_wait_for_commit(struct btrfs_root *root, u64 transid);
+void btrfs_wait_current_trans(struct btrfs_fs_info *fs_info);
 int btrfs_write_and_wait_transaction(struct btrfs_trans_handle *trans,
 				     struct btrfs_root *root);
 

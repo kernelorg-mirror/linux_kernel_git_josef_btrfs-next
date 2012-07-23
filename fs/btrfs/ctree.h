@@ -1158,6 +1158,14 @@ struct btrfs_fs_info {
 	spinlock_t fs_roots_radix_lock;
 	struct radix_tree_root fs_roots_radix;
 
+	/* eb caching stuff */
+	spinlock_t eb_tree_lock;
+	spinlock_t eb_lru_lock;
+	struct list_head eb_lru;
+	int eb_lru_nr;
+	struct radix_tree_root eb_tree;
+	struct shrinker eb_shrinker;
+
 	/* block group cache stuff */
 	spinlock_t block_group_cache_lock;
 	struct rb_root block_group_cache_tree;
@@ -1210,13 +1218,13 @@ struct btrfs_fs_info {
 	struct btrfs_super_block *super_for_commit;
 	struct block_device *__bdev;
 	struct super_block *sb;
-	struct inode *btree_inode;
 	struct backing_dev_info bdi;
 	struct mutex tree_log_mutex;
 	struct mutex transaction_kthread_mutex;
 	struct mutex cleaner_mutex;
 	struct mutex chunk_mutex;
 	struct mutex volume_mutex;
+	struct mutex metadata_flusher_mutex;
 	/*
 	 * this protects the ordered operations list only while we are
 	 * processing all of the entries on it.  This way we make
@@ -1263,6 +1271,7 @@ struct btrfs_fs_info {
 	atomic_t nr_async_bios;
 	atomic_t async_delalloc_pages;
 	atomic_t open_ioctl_trans;
+	atomic_t dirty_ebs;
 
 	/*
 	 * this is used by the balancing code to wait for all the pending
@@ -1312,6 +1321,9 @@ struct btrfs_fs_info {
 	struct btrfs_workers submit_workers;
 	struct btrfs_workers caching_workers;
 	struct btrfs_workers readahead_workers;
+	struct btrfs_workers eb_writeback_worker;
+	struct btrfs_work eb_writeback_work;
+	u64 writeback_index;
 
 	/*
 	 * fixup workers take dirty pages that didn't properly go through

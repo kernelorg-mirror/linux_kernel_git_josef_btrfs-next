@@ -326,7 +326,7 @@ static struct rb_node *tree_search(struct rb_root *root, u64 bytenr)
 	return NULL;
 }
 
-void backref_tree_panic(struct rb_node *rb_node, int errno,
+static void backref_tree_panic(struct rb_node *rb_node, int errno,
 					  u64 bytenr)
 {
 
@@ -4084,11 +4084,6 @@ int btrfs_relocate_block_group(struct btrfs_root *extent_root, u64 group_start)
 			rc->stage = UPDATE_DATA_PTRS;
 		}
 	}
-
-	filemap_write_and_wait_range(fs_info->btree_inode->i_mapping,
-				     rc->block_group->key.objectid,
-				     rc->block_group->key.objectid +
-				     rc->block_group->key.offset - 1);
 
 	WARN_ON(rc->block_group->pinned > 0);
 	WARN_ON(rc->block_group->reserved > 0);

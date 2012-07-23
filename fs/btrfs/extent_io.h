@@ -40,6 +40,8 @@
 #define EXTENT_BUFFER_WRITEBACK 7
 #define EXTENT_BUFFER_IOERR 8
 #define EXTENT_BUFFER_DUMMY 9
+#define EXTENT_BUFFER_IOLOCK 10
+#define EXTENT_BUFFER_REFERENCED 11
 
 /* these are flags for extent_clear_unlock_delalloc */
 #define EXTENT_CLEAR_UNLOCK_PAGE 0x1
@@ -129,12 +131,13 @@ struct extent_buffer {
 	unsigned long map_start;
 	unsigned long map_len;
 	unsigned long bflags;
-	struct extent_io_tree *tree;
+	struct btrfs_root *root;
 	spinlock_t refs_lock;
 	atomic_t refs;
 	atomic_t io_pages;
 	int read_mirror;
 	struct list_head leak_list;
+	struct list_head lru;
 	struct rcu_head rcu_head;
 	pid_t lock_owner;
 
@@ -175,7 +178,48 @@ static inline int extent_compress_type(unsigned long bio_flags)
 	return bio_flags >> EXTENT_BIO_FLAG_SHIFT;
 }
 
+static inline int extent_buffer_tryiolock(struct extent_buffer *eb)
+{
+	return likely(!test_and_set_bit_lock(EXTENT_BUFFER_IOLOCK,
+					     &eb->bflags));
+}
+
+static int sleep_eb(void *word)
+{
+	io_schedule();
+	return 0;
+}
+
+static inline void wait_on_extent_buffer(struct extent_buffer *eb)
+{
+	might_sleep();
+	if (test_bit(EXTENT_BUFFER_IOLOCK, &eb->bflags))
+		wait_on_bit(&eb->bflags, EXTENT_BUFFER_IOLOCK, sleep_eb,
+			    TASK_UNINTERRUPTIBLE);
+}
+
+static inline void extent_buffer_iolock(struct extent_buffer *eb)
+{
+	might_sleep();
+	if (!extent_buffer_tryiolock(eb))
+		wait_on_bit_lock(&eb->bflags, EXTENT_BUFFER_IOLOCK, sleep_eb,
+				 TASK_UNINTERRUPTIBLE);
+}
+
+static inline void extent_buffer_iounlock(struct extent_buffer *eb)
+{
+	clear_bit_unlock(EXTENT_BUFFER_IOLOCK, &eb->bflags);
+	smp_mb__after_clear_bit();
+	wake_up_bit(&eb->bflags, EXTENT_BUFFER_IOLOCK);
+}
+
+static inline void extent_buffer_get(struct extent_buffer *eb)
+{
+	BUG_ON(!atomic_inc_not_zero(&eb->refs));
+}
+
 struct extent_map_tree;
+struct btrfs_fs_info;
 
 typedef struct extent_map *(get_extent_t)(struct inode *inode,
 					  struct page *page,
@@ -188,7 +232,8 @@ void extent_io_tree_init(struct extent_io_tree *tree,
 int try_release_extent_mapping(struct extent_map_tree *map,
 			       struct extent_io_tree *tree, struct page *page,
 			       gfp_t mask);
-int try_release_extent_buffer(struct page *page, gfp_t mask);
+int try_release_extent_buffer(struct btrfs_fs_info *fs_info,
+			      struct extent_buffer *eb);
 int try_release_extent_state(struct extent_map_tree *map,
 			     struct extent_io_tree *tree, struct page *page,
 			     gfp_t mask);
@@ -263,27 +308,31 @@ int set_state_private(struct extent_io_tree *tree, u64 start, u64 private);
 int get_state_private(struct extent_io_tree *tree, u64 start, u64 *private);
 void set_page_extent_mapped(struct page *page);
 
-struct extent_buffer *alloc_extent_buffer(struct extent_io_tree *tree,
+struct extent_buffer *alloc_extent_buffer(struct btrfs_root *root,
 					  u64 start, unsigned long len);
 struct extent_buffer *alloc_dummy_extent_buffer(u64 start, unsigned long len);
 struct extent_buffer *btrfs_clone_extent_buffer(struct extent_buffer *src);
-struct extent_buffer *find_extent_buffer(struct extent_io_tree *tree,
-					 u64 start, unsigned long len);
 void free_extent_buffer(struct extent_buffer *eb);
 void free_extent_buffer_stale(struct extent_buffer *eb);
+struct extent_buffer *find_extent_buffer(struct btrfs_fs_info *fs_info,
+					 u64 start);
+struct extent_buffer *find_extent_buffer_no_ref(struct btrfs_fs_info *fs_info,
+						u64 start);
+void free_extent_buffer(struct extent_buffer *eb);
+void free_extent_buffer_stale(struct extent_buffer *eb);
+int shrink_ebs(struct shrinker *shrinker, struct shrink_control *sc);
+void btrfs_destroy_eb_cache(struct btrfs_fs_info *fs_info);
 #define WAIT_NONE	0
 #define WAIT_COMPLETE	1
 #define WAIT_PAGE_LOCK	2
-int read_extent_buffer_pages(struct extent_io_tree *tree,
-			     struct extent_buffer *eb, u64 start, int wait,
-			     get_extent_t *get_extent, int mirror_num);
+int read_extent_buffer_pages(struct extent_buffer *eb, int wait,
+			     int mirror_num);
+int write_one_extent_buffer(struct extent_buffer *eb, int wait,
+			    int mirror_num);
+int write_extent_buffer_range(struct btrfs_root *root, u64 start,
+			      u64 end, int wait);
 unsigned long num_extent_pages(u64 start, u64 len);
 struct page *extent_buffer_page(struct extent_buffer *eb, unsigned long i);
-
-static inline void extent_buffer_get(struct extent_buffer *eb)
-{
-	atomic_inc(&eb->refs);
-}
 
 int memcmp_extent_buffer(struct extent_buffer *eb, const void *ptrv,
 			  unsigned long start,
@@ -303,10 +352,10 @@ void memmove_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
 void memset_extent_buffer(struct extent_buffer *eb, char c,
 			  unsigned long start, unsigned long len);
 void wait_extent_bit(struct extent_io_tree *tree, u64 start, u64 end, int bits);
-void clear_extent_buffer_dirty(struct extent_buffer *eb);
+int clear_extent_buffer_dirty(struct extent_buffer *eb);
 int set_extent_buffer_dirty(struct extent_buffer *eb);
-int set_extent_buffer_uptodate(struct extent_buffer *eb);
-int clear_extent_buffer_uptodate(struct extent_buffer *eb);
+void set_extent_buffer_uptodate(struct extent_buffer *eb);
+void clear_extent_buffer_uptodate(struct extent_buffer *eb);
 int extent_buffer_uptodate(struct extent_buffer *eb);
 int map_private_extent_buffer(struct extent_buffer *eb, unsigned long offset,
 		      unsigned long min_len, char **map,

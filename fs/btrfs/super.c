@@ -817,10 +817,8 @@ int btrfs_sync_fs(struct super_block *sb, int wait)
 
 	trace_btrfs_sync_fs(wait);
 
-	if (!wait) {
-		filemap_flush(fs_info->btree_inode->i_mapping);
+	if (!wait)
 		return 0;
-	}
 
 	btrfs_wait_ordered_extents(root, 0, 0);
 
