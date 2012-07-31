@@ -5810,9 +5810,6 @@ static int btrfs_get_blocks_direct(struct inode *inode, sector_t iblock,
 	if (!create && (em->block_start == EXTENT_MAP_HOLE ||
 			test_bit(EXTENT_FLAG_PREALLOC, &em->flags))) {
 		free_extent_map(em);
-		/* DIO will do one hole at a time, so just unlock a sector */
-		unlock_extent(&BTRFS_I(inode)->io_tree, start,
-			      start + root->sectorsize - 1);
 		return 0;
 	}
 
@@ -5961,8 +5958,6 @@ static void btrfs_endio_direct_read(struct bio *bio, int err)
 		bvec++;
 	} while (bvec <= bvec_end);
 
-	unlock_extent(&BTRFS_I(inode)->io_tree, dip->logical_offset,
-		      dip->logical_offset + dip->bytes - 1);
 	bio->bi_private = dip->private;
 
 	kfree(dip->csums);
@@ -6340,6 +6335,26 @@ static ssize_t check_direct_IO(struct btrfs_root *root, int rw, struct kiocb *io
 out:
 	return retval;
 }
+
+static void btrfs_direct_read_iodone(struct kiocb *iocb, loff_t offset,
+				     ssize_t bytes, void *private, int ret,
+				     bool is_async)
+{
+	struct inode *inode = iocb->ki_filp->f_mapping->host;
+	u64 lockend;
+
+	if (get_state_private(&BTRFS_I(inode)->io_tree, offset, &lockend)) {
+		WARN_ON(1);
+		goto out;
+	}
+
+	unlock_extent(&BTRFS_I(inode)->io_tree, offset, lockend);
+out:
+	if (is_async)
+		aio_complete(iocb, ret, 0);
+	inode_dio_done(inode);
+}
+
 static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 			const struct iovec *iov, loff_t offset,
 			unsigned long nr_segs)
@@ -6353,6 +6368,7 @@ static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 	int writing = rw & WRITE;
 	int write_bits = 0;
 	size_t count = iov_length(iov, nr_segs);
+	dio_iodone_t *iodone = NULL;
 
 	if (check_direct_IO(BTRFS_I(inode)->root, rw, iocb, iov,
 			    offset, nr_segs)) {
@@ -6438,6 +6454,9 @@ static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 					 1, 0, &cached_state, GFP_NOFS);
 			goto out;
 		}
+	} else {
+		set_state_private(&BTRFS_I(inode)->io_tree, lockstart, lockend);
+		iodone = btrfs_direct_read_iodone;
 	}
 
 	free_extent_state(cached_state);
@@ -6445,8 +6464,15 @@ static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 
 	ret = __blockdev_direct_IO(rw, iocb, inode,
 		   BTRFS_I(inode)->root->fs_info->fs_devices->latest_bdev,
-		   iov, offset, nr_segs, btrfs_get_blocks_direct, NULL,
+		   iov, offset, nr_segs, btrfs_get_blocks_direct, iodone,
 		   btrfs_submit_direct, 0);
+
+	/*
+	 * If we're reading we will be unlocked by the iodone call, unless ret
+	 * is 0 then we need to unlock since we didn't submit any io.
+	 */
+	if (!writing && ret)
+		goto out;
 
 	if (ret < 0 && ret != -EIOCBQUEUED) {
 		clear_extent_bit(&BTRFS_I(inode)->io_tree, offset,
