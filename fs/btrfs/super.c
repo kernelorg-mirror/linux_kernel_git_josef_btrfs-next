@@ -1625,6 +1625,7 @@ free_compress:
 
 static void __exit exit_btrfs_fs(void)
 {
+	destroy_extent_history();
 	btrfs_destroy_cachep();
 	btrfs_delayed_inode_exit();
 	extent_map_exit();

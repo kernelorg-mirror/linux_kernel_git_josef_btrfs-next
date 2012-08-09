@@ -5112,6 +5112,7 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 		       (unsigned long long)root_objectid,
 		       (unsigned long long)owner_objectid,
 		       (unsigned long long)owner_offset);
+		dump_extent_history(bytenr);
 	} else {
 		goto abort;
 	}

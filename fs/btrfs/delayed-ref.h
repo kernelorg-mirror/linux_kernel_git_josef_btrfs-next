@@ -24,6 +24,8 @@
 #define BTRFS_ADD_DELAYED_EXTENT 3 /* record a full extent allocation */
 #define BTRFS_UPDATE_DELAYED_HEAD 4 /* not changing ref count on head ref */
 
+#include <linux/stacktrace.h>
+
 struct btrfs_delayed_ref_node {
 	struct rb_node rb_node;
 
@@ -114,6 +116,20 @@ struct btrfs_delayed_data_ref {
 	u64 offset;
 };
 
+struct extent_action {
+	u64 bytenr;
+	u64 parent;
+	u64 ref_root;
+	u64 owner;
+	int action;
+#ifdef CONFIG_STACKTRACE
+	struct stack_trace trace;
+#endif
+	unsigned long entries[32];
+	struct list_head list;
+	struct rb_node node;
+};
+
 struct btrfs_delayed_ref_root {
 	struct rb_root root;
 
@@ -182,6 +198,21 @@ int btrfs_find_ref_cluster(struct btrfs_trans_handle *trans,
 int btrfs_check_delayed_seq(struct btrfs_fs_info *fs_info,
 			    struct btrfs_delayed_ref_root *delayed_refs,
 			    u64 seq);
+#ifdef CONFIG_STACKTRACE
+void dump_extent_history(u64 bytenr);
+
+void __exit destroy_extent_history(void);
+#else
+static inline void dump_extent_history(u64 bytenr)
+{
+	return;
+}
+
+static inline void __exit destroy_extent_history(void)
+{
+	return;
+}
+#endif
 
 /*
  * delayed refs with a ref_seq > 0 must be held back during backref walking.

@@ -23,6 +23,9 @@
 #include "delayed-ref.h"
 #include "transaction.h"
 
+static struct rb_root extent_history = RB_ROOT;
+static DEFINE_SPINLOCK(extent_history_lock);
+
 /*
  * delayed back reference update tracking.  For subvolume trees
  * we queue up extent allocations and backref maintenance for
@@ -520,6 +523,127 @@ update_existing_head_ref(struct btrfs_delayed_ref_node *existing,
 	existing->ref_mod += update->ref_mod;
 }
 
+#ifdef CONFIG_STACKTRACE
+void __exit destroy_extent_history(void)
+{
+	struct rb_node *n;
+
+	spin_lock(&extent_history_lock);
+	while ((n = rb_first(&extent_history))) {
+		struct extent_action *action;
+		struct list_head *head;
+
+		action = rb_entry(n, struct extent_action, node);
+		head = &action->list;
+		while (!list_empty(&action->list)) {
+			struct extent_action *tmp;
+
+			tmp = list_entry(action->list.next,
+					 struct extent_action, list);
+			list_del_init(&tmp->list);
+			kfree(tmp);
+		}
+		rb_erase(&action->node, &extent_history);
+		kfree(action);
+	}
+	spin_unlock(&extent_history_lock);
+}
+
+static void insert_action(struct extent_action *action)
+{
+	struct rb_node **p;
+	struct rb_node *parent_node = NULL;
+	struct extent_action *entry;
+
+	spin_lock(&extent_history_lock);
+	p = &extent_history.rb_node;
+	while (*p) {
+		parent_node = *p;
+		entry = rb_entry(parent_node, struct extent_action, node);
+		if (action->bytenr < entry->bytenr) {
+			p = &(*p)->rb_left;
+		} else if (action->bytenr > entry->bytenr) {
+			p = &(*p)->rb_right;
+		} else {
+			list_add_tail(&action->list, &entry->list);
+			spin_unlock(&extent_history_lock);
+			return;
+		}
+	}
+
+	rb_link_node(&action->node, parent_node, p);
+	rb_insert_color(&action->node, &extent_history);
+	spin_unlock(&extent_history_lock);
+}
+
+void dump_extent_history(u64 bytenr)
+{
+	struct extent_action *action;
+	struct rb_node *n;
+	struct list_head *head;
+	int found = 0;
+
+	spin_lock(&extent_history_lock);
+	n = extent_history.rb_node;
+
+	while (n) {
+		action = rb_entry(n, struct extent_action, node);
+		if (bytenr < action->bytenr) {
+			n = n->rb_left;
+		} else if (bytenr > action->bytenr) {
+			n = n->rb_right;
+		} else {
+			found = 1;
+			break;
+		}
+	}
+
+	if (!found) {
+		spin_unlock(&extent_history_lock);
+		WARN_ON(1);
+		return;
+	}
+
+	printk(KERN_ERR "dumping history for bytenr=%Lu\n", action->bytenr);
+	printk(KERN_ERR "parent=%Lu, ref_root=%Lu, owner=%Lu, action=%d\n",
+	       action->parent, action->ref_root, action->owner,
+	       action->action);
+	print_stack_trace(&action->trace, 0);
+	head = &action->list;
+	list_for_each_entry(action, head, list) {
+		printk(KERN_ERR "parent=%Lu, ref_root=%Lu, owner=%Lu, "
+		       "action=%d\n", action->parent, action->ref_root,
+		       action->owner, action->action);
+		print_stack_trace(&action->trace, 0);
+	}
+	spin_unlock(&extent_history_lock);
+}
+
+static void add_tree_action(u64 bytenr, u64 parent, u64 ref_root, u64 owner,
+			    int act)
+{
+	struct extent_action *action;
+
+	action = kmalloc(sizeof(struct extent_action), GFP_NOFS);
+	if (!action)
+		return;
+
+	action->bytenr = bytenr;
+	action->parent = parent;
+	action->ref_root = ref_root;
+	action->owner = owner;
+	action->action = act;
+	action->trace.nr_entries = 0;
+	action->trace.entries = action->entries;
+	action->trace.max_entries = 32;
+	action->trace.skip = 2;
+	INIT_LIST_HEAD(&action->list);
+
+	save_stack_trace(&action->trace);
+	insert_action(action);
+}
+#endif
+
 /*
  * helper function to actually insert a head node into the rbtree.
  * this does all the dirty work in terms of maintaining the correct
@@ -738,6 +862,11 @@ int btrfs_add_delayed_tree_ref(struct btrfs_fs_info *fs_info,
 	struct btrfs_delayed_ref_root *delayed_refs;
 
 	BUG_ON(extent_op && extent_op->is_data);
+
+#ifdef CONFIG_STACKTRACE
+	add_tree_action(bytenr, parent, ref_root, 0, action);
+#endif
+
 	ref = kmalloc(sizeof(*ref), GFP_NOFS);
 	if (!ref)
 		return -ENOMEM;
@@ -786,6 +915,9 @@ int btrfs_add_delayed_data_ref(struct btrfs_fs_info *fs_info,
 	struct btrfs_delayed_ref_root *delayed_refs;
 
 	BUG_ON(extent_op && !extent_op->is_data);
+#ifdef CONFIG_STACKTRACE
+	add_tree_action(bytenr, parent, ref_root, owner, action);
+#endif
 	ref = kmalloc(sizeof(*ref), GFP_NOFS);
 	if (!ref)
 		return -ENOMEM;
