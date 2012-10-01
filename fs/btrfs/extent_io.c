@@ -4473,14 +4473,9 @@ int set_extent_buffer_dirty(struct extent_buffer *eb)
 	unsigned long num_pages;
 	int was_dirty = 0;
 
-	check_buffer_tree_ref(eb);
-
 	was_dirty = test_and_set_bit(EXTENT_BUFFER_DIRTY, &eb->bflags);
 
 	num_pages = num_extent_pages(eb->start, eb->len);
-	WARN_ON(atomic_read(&eb->refs) == 0);
-	WARN_ON(!test_bit(EXTENT_BUFFER_TREE_REF, &eb->bflags));
-
 	for (i = 0; i < num_pages; i++)
 		set_page_dirty(extent_buffer_page(eb, i));
 	return was_dirty;
