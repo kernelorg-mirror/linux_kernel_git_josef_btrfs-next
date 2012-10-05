@@ -693,6 +693,7 @@ int btrfs_write_marked_extents(struct btrfs_root *root,
 
 	while (!find_first_extent_bit(dirty_pages, start, &start, &end,
 				      mark, &cached_state)) {
+//		printk(KERN_ERR "writing %Lu to %Lu\n", start, end);
 		convert_extent_bit(dirty_pages, start, end, EXTENT_NEED_WAIT,
 				   mark, &cached_state, GFP_NOFS);
 		cached_state = NULL;

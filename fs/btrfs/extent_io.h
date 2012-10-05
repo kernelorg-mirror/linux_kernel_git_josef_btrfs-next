@@ -345,4 +345,7 @@ int repair_io_failure(struct btrfs_mapping_tree *map_tree, u64 start,
 int end_extent_writepage(struct page *page, int err, u64 start, u64 end);
 int repair_eb_io_failure(struct btrfs_root *root, struct extent_buffer *eb,
 			 int mirror_num);
+struct extent_state *clear_state_bit(struct extent_io_tree *tree,
+				     struct extent_state *state,
+				     int *bits, int wake);
 #endif

@@ -1555,6 +1555,9 @@ struct btrfs_root {
 
 	struct list_head root_list;
 
+	spinlock_t ordered_lock;
+	struct list_head ordered_list;
+
 	spinlock_t orphan_lock;
 	atomic_t orphan_inodes;
 	struct btrfs_block_rsv *orphan_block_rsv;

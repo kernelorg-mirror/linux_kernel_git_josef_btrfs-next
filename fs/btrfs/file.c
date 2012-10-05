@@ -1468,8 +1468,11 @@ static ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 	}
 
 	if (unlikely(file->f_flags & O_DIRECT)) {
+		iocb->ki_key = 0;
 		num_written = __btrfs_direct_write(iocb, iov, nr_segs,
 						   pos, ppos, count, ocount);
+		if (num_written == -EIOCBQUEUED)
+			num_written = count;
 	} else {
 		struct iov_iter i;
 
@@ -1562,7 +1565,9 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	 * range being left.
 	 */
 	atomic_inc(&root->log_batch);
-	btrfs_wait_ordered_range(inode, start, end);
+	if (test_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
+		     &BTRFS_I(inode)->runtime_flags))
+		btrfs_wait_ordered_range(inode, start, end);
 	atomic_inc(&root->log_batch);
 
 	/*

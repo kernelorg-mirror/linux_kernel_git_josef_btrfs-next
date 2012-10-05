@@ -6319,6 +6319,7 @@ static struct extent_map *btrfs_new_extent_direct(struct inode *inode,
 	em->block_start = ins.objectid;
 	em->block_len = ins.offset;
 	em->bdev = root->fs_info->fs_devices->latest_bdev;
+	em->generation = trans->transid;
 
 	/*
 	 * We need to do this because if we're using the original em we searched
@@ -6330,6 +6331,9 @@ static struct extent_map *btrfs_new_extent_direct(struct inode *inode,
 	while (insert) {
 		write_lock(&em_tree->lock);
 		ret = add_extent_mapping(em_tree, em);
+		if (!ret)
+			list_move(&em->list,
+				  &em_tree->modified_extents);
 		write_unlock(&em_tree->lock);
 		if (ret != -EEXIST)
 			break;
@@ -6468,7 +6472,7 @@ static int lock_extent_direct(struct inode *inode, u64 lockstart, u64 lockend,
 static struct extent_map *create_pinned_em(struct inode *inode, u64 start,
 					   u64 len, u64 orig_start,
 					   u64 block_start, u64 block_len,
-					   int type)
+					   int type, u64 gen)
 {
 	struct extent_map_tree *em_tree;
 	struct extent_map *em;
@@ -6486,6 +6490,7 @@ static struct extent_map *create_pinned_em(struct inode *inode, u64 start,
 	em->block_len = block_len;
 	em->block_start = block_start;
 	em->bdev = root->fs_info->fs_devices->latest_bdev;
+	em->generation = gen;
 	set_bit(EXTENT_FLAG_PINNED, &em->flags);
 	if (type == BTRFS_ORDERED_PREALLOC)
 		set_bit(EXTENT_FLAG_PREALLOC, &em->flags);
@@ -6495,6 +6500,9 @@ static struct extent_map *create_pinned_em(struct inode *inode, u64 start,
 				em->start + em->len - 1, 0);
 		write_lock(&em_tree->lock);
 		ret = add_extent_mapping(em_tree, em);
+		if (!ret)
+			list_move(&em->list,
+				  &em_tree->modified_extents);
 		write_unlock(&em_tree->lock);
 	} while (ret == -EEXIST);
 
@@ -6627,7 +6635,7 @@ static int btrfs_get_blocks_direct(struct inode *inode, sector_t iblock,
 				free_extent_map(em);
 				em = create_pinned_em(inode, start, len,
 						       orig_start,
-						       block_start, len, type);
+						       block_start, len, type, trans->transid);
 				if (IS_ERR(em)) {
 					btrfs_end_transaction(trans, root);
 					goto unlock_err;
@@ -7139,6 +7147,15 @@ out:
 	return retval;
 }
 
+static void btrfs_direct_endio(struct kiocb *iocb, loff_t offset,
+			       ssize_t bytes, void *private, int ret,
+			       bool is_async)
+{
+//	if (is_async && iocb->ki_key != (unsigned)-2)
+//		aio_complete(iocb, ret, 0);
+	inode_dio_done(fdentry(iocb->ki_filp)->d_inode);
+}
+
 static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 			const struct iovec *iov, loff_t offset,
 			unsigned long nr_segs)
@@ -7150,10 +7167,13 @@ static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 			    offset, nr_segs))
 		return 0;
 
+//	if (is_sync_kiocb(iocb))
+//		iocb->ki_key = (unsigned)-2;
+
 	return __blockdev_direct_IO(rw, iocb, inode,
 		   BTRFS_I(inode)->root->fs_info->fs_devices->latest_bdev,
-		   iov, offset, nr_segs, btrfs_get_blocks_direct, NULL,
-		   btrfs_submit_direct, 0);
+		   iov, offset, nr_segs, btrfs_get_blocks_direct,
+		   btrfs_direct_endio, btrfs_submit_direct, 0);
 }
 
 static int btrfs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,

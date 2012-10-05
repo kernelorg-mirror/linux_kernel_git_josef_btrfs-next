@@ -419,9 +419,9 @@ static struct extent_state *next_state(struct extent_state *state)
  * If no bits are set on the state struct after clearing things, the
  * struct is freed and removed from the tree
  */
-static struct extent_state *clear_state_bit(struct extent_io_tree *tree,
-					    struct extent_state *state,
-					    int *bits, int wake)
+struct extent_state *clear_state_bit(struct extent_io_tree *tree,
+				     struct extent_state *state,
+				     int *bits, int wake)
 {
 	struct extent_state *next;
 	int bits_to_clear = *bits & ~EXTENT_CTLBITS;

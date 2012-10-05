@@ -2318,15 +2318,17 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	else
 		mark = EXTENT_NEW;
 
+
 	/* we start IO on  all the marked extents here, but we don't actually
 	 * wait for them until later.
-	 */
+	 *
 	ret = btrfs_write_marked_extents(log, &log->dirty_log_pages, mark);
 	if (ret) {
 		btrfs_abort_transaction(trans, root, ret);
 		mutex_unlock(&root->log_mutex);
 		goto out;
 	}
+	*/
 
 	btrfs_set_root_node(&log->root_item, log->node);
 
@@ -2397,7 +2399,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		goto out_wake_log_root;
 	}
 
-	ret = btrfs_write_and_wait_marked_extents(log_root_tree,
+	ret = btrfs_write_marked_extents(log_root_tree,
 				&log_root_tree->dirty_log_pages,
 				EXTENT_DIRTY | EXTENT_NEW);
 	if (ret) {
@@ -2405,7 +2407,12 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		mutex_unlock(&log_root_tree->log_mutex);
 		goto out_wake_log_root;
 	}
-	btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
+//	btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
+	btrfs_wait_marked_extents(log_root_tree,
+				  &log_root_tree->dirty_log_pages,
+				  EXTENT_DIRTY | EXTENT_NEW);
+	btrfs_wait_logged_extent(log);
+//	printk(KERN_ERR "dont syncing\n");
 
 	btrfs_set_super_log_root(root->fs_info->super_for_commit,
 				log_root_tree->node->start);
@@ -2992,6 +2999,40 @@ static void fill_inode_item(struct btrfs_trans_handle *trans,
 	}
 
 }
+static noinline int lookup_csums(struct btrfs_trans_handle *trans,
+				 struct btrfs_root *csum_root,
+				 struct extent_buffer *leaf,
+				 struct list_head *ordered_sums,
+				 int slot)
+{
+	struct btrfs_file_extent_item *extent;
+	u64 ds, dl, cs, cl;
+	int found_type;
+
+	extent = btrfs_item_ptr(leaf, slot, struct btrfs_file_extent_item);
+	if (btrfs_file_extent_generation(leaf, extent) < trans->transid)
+		return 0;
+
+	found_type = btrfs_file_extent_type(leaf, extent);
+	if (found_type != BTRFS_FILE_EXTENT_REG)
+		return 0;
+
+	ds = btrfs_file_extent_disk_bytenr(leaf, extent);
+	/* ds == 0 is a hole */
+	if (ds == 0)
+		return 0;
+
+	dl = btrfs_file_extent_disk_num_bytes(leaf, extent);
+	cs = btrfs_file_extent_offset(leaf, extent);
+	cl = btrfs_file_extent_num_bytes(leaf, extent);
+	if (btrfs_file_extent_compression(leaf, extent)) {
+		cs = 0;
+		cl = dl;
+	}
+
+	return btrfs_lookup_csums_range(csum_root, ds + cs, ds + cs + cl - 1,
+					ordered_sums, 0);
+}
 
 static noinline int copy_items(struct btrfs_trans_handle *trans,
 			       struct inode *inode,
@@ -3056,39 +3097,9 @@ static noinline int copy_items(struct btrfs_trans_handle *trans,
 		 */
 		if (btrfs_key_type(ins_keys + i) == BTRFS_EXTENT_DATA_KEY &&
 		    !skip_csum) {
-			int found_type;
-			extent = btrfs_item_ptr(src, start_slot + i,
-						struct btrfs_file_extent_item);
-
-			if (btrfs_file_extent_generation(src, extent) < trans->transid)
-				continue;
-
-			found_type = btrfs_file_extent_type(src, extent);
-			if (found_type == BTRFS_FILE_EXTENT_REG) {
-				u64 ds, dl, cs, cl;
-				ds = btrfs_file_extent_disk_bytenr(src,
-								extent);
-				/* ds == 0 is a hole */
-				if (ds == 0)
-					continue;
-
-				dl = btrfs_file_extent_disk_num_bytes(src,
-								extent);
-				cs = btrfs_file_extent_offset(src, extent);
-				cl = btrfs_file_extent_num_bytes(src,
-								extent);
-				if (btrfs_file_extent_compression(src,
-								  extent)) {
-					cs = 0;
-					cl = dl;
-				}
-
-				ret = btrfs_lookup_csums_range(
-						log->fs_info->csum_root,
-						ds + cs, ds + cs + cl - 1,
-						&ordered_sums, 0);
-				BUG_ON(ret);
-			}
+			ret = lookup_csums(trans, log->fs_info->csum_root,
+					   src, &ordered_sums, start_slot + i);
+			BUG_ON(ret);
 		}
 	}
 
@@ -3141,13 +3152,18 @@ static int log_one_extent(struct btrfs_trans_handle *trans,
 {
 	struct btrfs_root *log = root->log_root;
 	struct btrfs_file_extent_item *fi;
+	struct list_head ordered_sums;
+	struct extent_buffer *leaf;
 	struct btrfs_key key;
 	u64 start = em->mod_start;
 	u64 search_start = start;
 	u64 len = em->mod_len;
 	u64 num_bytes;
+	int skip_csum = BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM;
 	int nritems;
 	int ret;
+
+	INIT_LIST_HEAD(&ordered_sums);
 
 	if (BTRFS_I(inode)->logged_trans == trans->transid) {
 		ret = __btrfs_drop_extents(trans, log, inode, dst_path, start,
@@ -3156,113 +3172,55 @@ static int log_one_extent(struct btrfs_trans_handle *trans,
 			return ret;
 	}
 
-	while (len) {
-		if (args->nr)
-			goto next_slot;
-again:
-		key.objectid = btrfs_ino(inode);
-		key.type = BTRFS_EXTENT_DATA_KEY;
-		key.offset = search_start;
+	key.objectid = btrfs_ino(inode);
+	key.offset = em->start;
+	key.type = BTRFS_EXTENT_DATA_KEY;
 
-		ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
-		if (ret < 0)
-			return ret;
-
-		if (ret) {
-			/*
-			 * A rare case were we can have an em for a section of a
-			 * larger extent so we need to make sure that this em
-			 * falls within the extent we've found.  If not we just
-			 * bail and go back to ye-olde way of doing things but
-			 * it happens often enough in testing that we need to do
-			 * this dance to make sure.
-			 */
-			do {
-				if (path->slots[0] == 0) {
-					btrfs_release_path(path);
-					if (search_start == 0)
-						return -ENOENT;
-					search_start--;
-					goto again;
-				}
-
-				path->slots[0]--;
-				btrfs_item_key_to_cpu(path->nodes[0], &key,
-						      path->slots[0]);
-				if (key.objectid != btrfs_ino(inode) ||
-				    key.type != BTRFS_EXTENT_DATA_KEY) {
-					btrfs_release_path(path);
-					return -ENOENT;
-				}
-			} while (key.offset > start);
-
-			fi = btrfs_item_ptr(path->nodes[0], path->slots[0],
-					    struct btrfs_file_extent_item);
-			num_bytes = btrfs_file_extent_num_bytes(path->nodes[0],
-								fi);
-			if (key.offset + num_bytes <= start) {
-				btrfs_release_path(path);
-				return -ENOENT;
-			}
-		}
-		args->src = path->nodes[0];
-next_slot:
-		btrfs_item_key_to_cpu(path->nodes[0], &key, path->slots[0]);
-		fi = btrfs_item_ptr(args->src, path->slots[0],
-				    struct btrfs_file_extent_item);
-		if (args->nr &&
-		    args->start_slot + args->nr == path->slots[0]) {
-			args->nr++;
-		} else if (args->nr) {
-			ret = copy_items(trans, inode, dst_path, args->src,
-					 args->start_slot, args->nr,
-					 LOG_INODE_ALL);
-			if (ret)
-				return ret;
-			args->nr = 1;
-			args->start_slot = path->slots[0];
-		} else if (!args->nr) {
-			args->nr = 1;
-			args->start_slot = path->slots[0];
-		}
-		nritems = btrfs_header_nritems(path->nodes[0]);
-		path->slots[0]++;
-		num_bytes = btrfs_file_extent_num_bytes(args->src, fi);
-		if (len < num_bytes) {
-			/* I _think_ this is ok, envision we write to a
-			 * preallocated space that is adjacent to a previously
-			 * written preallocated space that gets merged when we
-			 * mark this preallocated space written.  If we do not
-			 * have the adjacent extent in cache then when we copy
-			 * this extent it could end up being larger than our EM
-			 * thinks it is, which is a-ok, so just set len to 0.
-			 */
-			len = 0;
-		} else {
-			len -= num_bytes;
-		}
-		start = key.offset + num_bytes;
-		args->next_offset = start;
-		search_start = start;
-
-		if (path->slots[0] < nritems) {
-			if (len)
-				goto next_slot;
-			break;
-		}
-
-		if (args->nr) {
-			ret = copy_items(trans, inode, dst_path, args->src,
-					 args->start_slot, args->nr,
-					 LOG_INODE_ALL);
-			if (ret)
-				return ret;
-			args->nr = 0;
-			btrfs_release_path(path);
-		}
+	ret = btrfs_insert_empty_item(trans, log, dst_path, &key, sizeof(*fi));
+	if (ret)
+		return ret;
+	leaf = dst_path->nodes[0];
+	fi = btrfs_item_ptr(leaf, dst_path->slots[0],
+			    struct btrfs_file_extent_item);
+	btrfs_set_file_extent_generation(leaf, fi, em->generation);
+	if (test_bit(EXTENT_FLAG_PREALLOC, &em->flags)) {
+		skip_csum = 1;
+		btrfs_set_file_extent_type(leaf, fi, BTRFS_FILE_EXTENT_PREALLOC);
+	} else {
+		btrfs_set_file_extent_type(leaf, fi, BTRFS_FILE_EXTENT_REG);
+		if (em->block_start == 0)
+			skip_csum = 1;
 	}
 
-	return 0;
+	btrfs_set_file_extent_disk_bytenr(leaf, fi, em->block_start);
+	btrfs_set_file_extent_disk_num_bytes(leaf, fi, em->block_len);
+	btrfs_set_file_extent_offset(leaf, fi, em->start - em->orig_start);
+	btrfs_set_file_extent_num_bytes(leaf, fi, em->len);
+	btrfs_set_file_extent_ram_bytes(leaf, fi, em->len);
+	btrfs_set_file_extent_compression(leaf, fi, em->compress_type);
+	btrfs_set_file_extent_encryption(leaf, fi, 0);
+	btrfs_set_file_extent_other_encoding(leaf, fi, 0);
+	btrfs_mark_buffer_dirty(leaf);
+	if (skip_csum) {
+		btrfs_release_path(dst_path);
+		return 0;
+	}
+
+	ret = lookup_csums(trans, log->fs_info->csum_root, leaf, &ordered_sums,
+			   dst_path->slots[0]);
+	btrfs_release_path(dst_path);
+
+	while (!list_empty(&ordered_sums)) {
+		struct btrfs_ordered_sum *sums = list_entry(ordered_sums.next,
+						   struct btrfs_ordered_sum,
+						   list);
+		if (!ret)
+			ret = btrfs_csum_file_blocks(trans, log, sums);
+		list_del(&sums->list);
+		kfree(sums);
+	}
+
+	return ret;
 }
 
 static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
@@ -3277,6 +3235,7 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 	struct extent_map_tree *tree = &BTRFS_I(inode)->extent_tree;
 	u64 test_gen;
 	int ret = 0;
+	int nr = 0;
 
 	INIT_LIST_HEAD(&extents);
 
@@ -3314,34 +3273,15 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 
 		write_unlock(&tree->lock);
 
-		/*
-		 * If the previous EM and the last extent we left off on aren't
-		 * sequential then we need to copy the items we have and redo
-		 * our search
-		 */
-		if (args.nr && em->mod_start != args.next_offset) {
-			ret = copy_items(trans, inode, dst_path, args.src,
-					 args.start_slot, args.nr,
-					 LOG_INODE_ALL);
-			if (ret) {
-				free_extent_map(em);
-				write_lock(&tree->lock);
-				continue;
-			}
-			btrfs_release_path(path);
-			args.nr = 0;
-		}
-
 		ret = log_one_extent(trans, inode, root, em, path, dst_path, &args);
+//		nr++;
 		free_extent_map(em);
 		write_lock(&tree->lock);
 	}
 	WARN_ON(!list_empty(&extents));
 	write_unlock(&tree->lock);
 
-	if (!ret && args.nr)
-		ret = copy_items(trans, inode, dst_path, args.src,
-				 args.start_slot, args.nr, LOG_INODE_ALL);
+//	printk(KERN_ERR "added %d extents\n", nr);
 	btrfs_release_path(path);
 	return ret;
 }
@@ -3433,7 +3373,7 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 							 inode, 0, 0);
 		} else {
 			fast_search = true;
-			max_key.type = BTRFS_XATTR_ITEM_KEY;
+			max_key.type = BTRFS_INODE_ITEM_KEY;
 			ret = drop_objectid_items(trans, log, path, ino,
 						  BTRFS_XATTR_ITEM_KEY);
 		}
@@ -3450,10 +3390,24 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 					   path, 0, trans->transid);
 		if (ret != 0)
 			break;
+
+		nritems = btrfs_header_nritems(path->nodes[0]);
+		if (fast_search && path->slots[0] < nritems - 1) {
+			struct btrfs_key tmp;
+
+			btrfs_item_key_to_cpu(path->nodes[0], &tmp, nritems - 1);
+			if (tmp.objectid != ino) {
+				fast_search = false;
+				max_key.type = (u8)-1;
+			}
+		}
 again:
 		/* note, ins_nr might be > 0 here, cleanup outside the loop */
-		if (min_key.objectid != ino)
+		if (min_key.objectid != ino) {
+			fast_search = false;
 			break;
+		}
+
 		if (min_key.type > max_key.type)
 			break;
 
@@ -3485,6 +3439,7 @@ next_slot:
 			goto again;
 		}
 		if (ins_nr) {
+//			printk(KERN_ERR "wrote %d items\n", ins_nr);
 			ret = copy_items(trans, inode, dst_path, src,
 					 ins_start_slot,
 					 ins_nr, inode_only);
@@ -3506,6 +3461,7 @@ next_slot:
 			break;
 	}
 	if (ins_nr) {
+//		printk(KERN_ERR "wrote %d items\n", ins_nr);
 		ret = copy_items(trans, inode, dst_path, src, ins_start_slot,
 				 ins_nr, inode_only);
 		if (ret) {
@@ -3518,6 +3474,7 @@ next_slot:
 	if (fast_search) {
 		btrfs_release_path(path);
 		btrfs_release_path(dst_path);
+		btrfs_get_logged_extents(log, inode);
 		ret = btrfs_log_changed_extents(trans, root, inode, path,
 						dst_path);
 		if (ret) {
@@ -3532,6 +3489,7 @@ next_slot:
 			list_del_init(&em->list);
 	}
 
+//	printk(KERN_ERR "done\n");
 	if (inode_only == LOG_INODE_ALL && S_ISDIR(inode->i_mode)) {
 		btrfs_release_path(path);
 		btrfs_release_path(dst_path);

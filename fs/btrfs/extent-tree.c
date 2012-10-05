@@ -6222,6 +6222,9 @@ struct extent_buffer *btrfs_init_new_buffer(struct btrfs_trans_handle *trans,
 	btrfs_set_buffer_uptodate(buf);
 
 	if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID) {
+		if (root->fs_info->log_root_tree)
+			root = root->fs_info->log_root_tree;
+
 		/*
 		 * we allow two log transactions at a time, use different
 		 * EXENT bit to differentiate dirty pages.

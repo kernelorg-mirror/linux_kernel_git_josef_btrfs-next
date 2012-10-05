@@ -211,6 +211,7 @@ static int __btrfs_add_ordered_extent(struct inode *inode, u64 file_offset,
 	init_waitqueue_head(&entry->wait);
 	INIT_LIST_HEAD(&entry->list);
 	INIT_LIST_HEAD(&entry->root_extent_list);
+	INIT_LIST_HEAD(&entry->log_list);
 
 	trace_btrfs_ordered_extent_add(inode, entry);
 
@@ -598,6 +599,42 @@ void btrfs_start_ordered_extent(struct inode *inode,
 	}
 }
 
+void btrfs_get_logged_extents(struct btrfs_root *log, struct inode *inode)
+{
+	struct btrfs_ordered_inode_tree *tree;
+	struct btrfs_ordered_extent *ordered;
+	struct rb_node *n;
+
+	tree = &BTRFS_I(inode)->ordered_tree;
+	spin_lock_irq(&tree->lock);
+	for (n = rb_first(&tree->tree); n; n = rb_next(n)) {
+		ordered = rb_entry(n, struct btrfs_ordered_extent, rb_node);
+		spin_lock(&log->ordered_lock);
+		list_add_tail(&ordered->log_list, &log->ordered_list);
+		spin_unlock(&log->ordered_lock);
+		atomic_inc(&ordered->refs);
+	}
+	spin_unlock_irq(&tree->lock);
+}
+
+void btrfs_wait_logged_extent(struct btrfs_root *log)
+{
+	struct btrfs_ordered_extent *ordered;
+
+	spin_lock(&log->ordered_lock);
+	while (!list_empty(&log->ordered_list)) {
+		ordered = list_first_entry(&log->ordered_list,
+					   struct btrfs_ordered_extent,
+					   log_list);
+		list_del_init(&ordered->log_list);
+		spin_unlock(&log->ordered_lock);
+		wait_event(ordered->wait, test_bit(BTRFS_ORDERED_IO_DONE,
+						   &ordered->flags));
+		btrfs_put_ordered_extent(ordered);
+		spin_lock(&log->ordered_lock);
+	}
+	spin_unlock(&log->ordered_lock);
+}
 /*
  * Used to wait on ordered extents across a large range of bytes.
  */
