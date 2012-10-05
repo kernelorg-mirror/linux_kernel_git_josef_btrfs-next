@@ -1634,16 +1634,19 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 
 	if (ret != BTRFS_NO_LOG_SYNC) {
 		if (ret > 0) {
+			printk(KERN_ERR "committing the transaction\n");
 			ret = btrfs_commit_transaction(trans, root);
 		} else {
 			ret = btrfs_sync_log(trans, root);
 			if (ret == 0)
-				ret = btrfs_end_transaction(trans, root);
-			else
+				ret = btrfs_end_transaction_fsync(trans, root);
+			else {
+				printk(KERN_ERR "Had to commit the transaction?\n");
 				ret = btrfs_commit_transaction(trans, root);
+			}
 		}
 	} else {
-		ret = btrfs_end_transaction(trans, root);
+		ret = btrfs_end_transaction_fsync(trans, root);
 	}
 out:
 	return ret > 0 ? -EIO : ret;

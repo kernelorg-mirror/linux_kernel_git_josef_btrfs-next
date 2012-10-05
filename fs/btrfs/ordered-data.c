@@ -609,10 +609,10 @@ void btrfs_get_logged_extents(struct btrfs_root *log, struct inode *inode)
 	spin_lock_irq(&tree->lock);
 	for (n = rb_first(&tree->tree); n; n = rb_next(n)) {
 		ordered = rb_entry(n, struct btrfs_ordered_extent, rb_node);
+		atomic_inc(&ordered->refs);
 		spin_lock(&log->ordered_lock);
 		list_add_tail(&ordered->log_list, &log->ordered_list);
 		spin_unlock(&log->ordered_lock);
-		atomic_inc(&ordered->refs);
 	}
 	spin_unlock_irq(&tree->lock);
 }

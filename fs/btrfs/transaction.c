@@ -547,7 +547,8 @@ int btrfs_should_end_transaction(struct btrfs_trans_handle *trans,
 }
 
 static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
-			  struct btrfs_root *root, int throttle)
+			  struct btrfs_root *root, int throttle,
+			  int skip_delayed_refs)
 {
 	struct btrfs_transaction *cur_trans = trans->transaction;
 	struct btrfs_fs_info *info = root->fs_info;
@@ -581,6 +582,12 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	if (!list_empty(&trans->new_bgs))
 		btrfs_create_pending_block_groups(trans, root);
 
+	if (skip_delayed_refs) {
+		if (trans->delayed_ref_updates)
+			printk(KERN_ERR "had %d delayed ref updates\n");
+		goto blah;
+	}
+
 	while (count < 2) {
 		unsigned long cur = trans->delayed_ref_updates;
 		trans->delayed_ref_updates = 0;
@@ -593,6 +600,7 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 		}
 		count++;
 	}
+blah:
 	btrfs_trans_release_metadata(trans, root);
 	trans->block_rsv = NULL;
 
@@ -643,7 +651,6 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	}
 	assert_qgroups_uptodate(trans);
 
-	memset(trans, 0, sizeof(*trans));
 	kmem_cache_free(btrfs_trans_handle_cachep, trans);
 	return err;
 }
@@ -653,7 +660,7 @@ int btrfs_end_transaction(struct btrfs_trans_handle *trans,
 {
 	int ret;
 
-	ret = __btrfs_end_transaction(trans, root, 0);
+	ret = __btrfs_end_transaction(trans, root, 0, 0);
 	if (ret)
 		return ret;
 	return 0;
@@ -664,7 +671,7 @@ int btrfs_end_transaction_throttle(struct btrfs_trans_handle *trans,
 {
 	int ret;
 
-	ret = __btrfs_end_transaction(trans, root, 1);
+	ret = __btrfs_end_transaction(trans, root, 1, 0);
 	if (ret)
 		return ret;
 	return 0;
@@ -673,9 +680,14 @@ int btrfs_end_transaction_throttle(struct btrfs_trans_handle *trans,
 int btrfs_end_transaction_dmeta(struct btrfs_trans_handle *trans,
 				struct btrfs_root *root)
 {
-	return __btrfs_end_transaction(trans, root, 1);
+	return __btrfs_end_transaction(trans, root, 1, 0);
 }
 
+int btrfs_end_transaction_fsync(struct btrfs_trans_handle *trans,
+				struct btrfs_root *root)
+{
+	return __btrfs_end_transaction(trans, root, 0, 1);
+}
 /*
  * when btree blocks are allocated, they have some corresponding bits set for
  * them in one of two extent_io trees.  This is used to make sure all of

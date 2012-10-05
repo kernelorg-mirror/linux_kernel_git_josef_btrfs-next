@@ -2841,7 +2841,7 @@ static int write_dev_supers(struct btrfs_device *device,
 		 * we fua the first super.  The others we allow
 		 * to go down lazy.
 		 */
-		ret = btrfsic_submit_bh(WRITE_FUA, bh);
+		ret = btrfsic_submit_bh(WRITE, bh);
 		if (ret)
 			errors++;
 	}

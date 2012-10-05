@@ -2386,7 +2386,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 				log_root_tree->log_transid - 1);
 	}
 
-	wait_for_writer(trans, log_root_tree);
+//	wait_for_writer(trans, log_root_tree);
 
 	/*
 	 * now that we've moved on to the tree of log tree roots,
@@ -2407,11 +2407,12 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		mutex_unlock(&log_root_tree->log_mutex);
 		goto out_wake_log_root;
 	}
+//	schedule_timeout(1);
 //	btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
-	btrfs_wait_marked_extents(log_root_tree,
-				  &log_root_tree->dirty_log_pages,
-				  EXTENT_DIRTY | EXTENT_NEW);
-	btrfs_wait_logged_extent(log);
+//	btrfs_wait_marked_extents(log_root_tree,
+//				  &log_root_tree->dirty_log_pages,
+//				  EXTENT_DIRTY | EXTENT_NEW);
+//	btrfs_wait_logged_extent(log);
 //	printk(KERN_ERR "dont syncing\n");
 
 	btrfs_set_super_log_root(root->fs_info->super_for_commit,
@@ -3166,8 +3167,8 @@ static int log_one_extent(struct btrfs_trans_handle *trans,
 	INIT_LIST_HEAD(&ordered_sums);
 
 	if (BTRFS_I(inode)->logged_trans == trans->transid) {
-		ret = __btrfs_drop_extents(trans, log, inode, dst_path, start,
-					   start + len, NULL, 0);
+		ret = __btrfs_drop_extents(trans, log, inode, dst_path, em->start,
+					   em->start + em->len, NULL, 0);
 		if (ret)
 			return ret;
 	}
@@ -3474,7 +3475,7 @@ next_slot:
 	if (fast_search) {
 		btrfs_release_path(path);
 		btrfs_release_path(dst_path);
-		btrfs_get_logged_extents(log, inode);
+//btrfs_get_logged_extents(log, inode);
 		ret = btrfs_log_changed_extents(trans, root, inode, path,
 						dst_path);
 		if (ret) {
