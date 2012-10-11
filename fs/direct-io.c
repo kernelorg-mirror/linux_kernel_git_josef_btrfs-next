@@ -299,19 +299,35 @@ static void dio_bio_end_aio(struct bio *bio, int error)
  * handler.
  *
  * During I/O bi_private points at the dio.  After I/O, bi_private is used to
- * implement a singly-linked list of completed BIOs, at dio->bio_list.
+ * implement a singly-linked list of completed BIOs, at dio->bio_list, but only
+ * if the file system isn't doing its own waiting.
  */
 static void dio_bio_end_io(struct bio *bio, int error)
 {
 	struct dio *dio = bio->bi_private;
 	unsigned long flags;
+	unsigned long remaining;
+	bool own_waiting = ((dio->rw & WRITE) &&
+			    (dio->flags & DIO_OWN_WAITING));
+
+	if (own_waiting)
+		dio_bio_complete(dio, bio);
 
 	spin_lock_irqsave(&dio->bio_lock, flags);
-	bio->bi_private = dio->bio_list;
-	dio->bio_list = bio;
-	if (--dio->refcount == 1 && dio->waiter)
+	if (!own_waiting) {
+		bio->bi_private = dio->bio_list;
+		dio->bio_list = bio;
+	}
+	remaining = --dio->refcount;
+	if (remaining == 1 && dio->waiter)
 		wake_up_process(dio->waiter);
 	spin_unlock_irqrestore(&dio->bio_lock, flags);
+
+	if (remaining == 0) {
+		BUG_ON(!(dio->flags & DIO_OWN_WAITING));
+		dio_complete(dio, dio->iocb->ki_pos, 0, false);
+		kmem_cache_free(dio_cache, dio);
+	}
 }
 
 /**
@@ -1266,14 +1282,20 @@ do_blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 	    ((rw == READ) || (dio->result == sdio.size)))
 		retval = -EIOCBQUEUED;
 
-	if (retval != -EIOCBQUEUED)
+	if (retval != -EIOCBQUEUED &&
+	    (rw == READ || !(flags & DIO_OWN_WAITING)))
 		dio_await_completion(dio);
 
 	if (drop_refcount(dio) == 0) {
 		retval = dio_complete(dio, offset, retval, false);
 		kmem_cache_free(dio_cache, dio);
-	} else
-		BUG_ON(retval != -EIOCBQUEUED);
+	} else {
+		BUG_ON(retval != -EIOCBQUEUED && !(flags & DIO_OWN_WAITING));
+
+		/* Need to return how much data we should be waiting for */
+		if (!retval && flags & DIO_OWN_WAITING)
+			retval = dio->result;
+	}
 
 out:
 	return retval;

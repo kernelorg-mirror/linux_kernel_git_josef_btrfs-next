@@ -2433,6 +2433,9 @@ enum {
 
 	/* filesystem does not support filling holes */
 	DIO_SKIP_HOLES	= 0x02,
+
+	/* filesystem will do it's own waiting thank you! */
+	DIO_OWN_WAITING = 0x04,
 };
 
 void dio_end_io(struct bio *bio, int error);
