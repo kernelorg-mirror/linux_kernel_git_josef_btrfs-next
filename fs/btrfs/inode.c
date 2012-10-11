@@ -705,10 +705,14 @@ retry:
 		em->compress_type = async_extent->compress_type;
 		set_bit(EXTENT_FLAG_PINNED, &em->flags);
 		set_bit(EXTENT_FLAG_COMPRESSED, &em->flags);
+		em->generation = -1;
 
 		while (1) {
 			write_lock(&em_tree->lock);
 			ret = add_extent_mapping(em_tree, em);
+			if (!ret)
+				list_move(&em->list,
+					  &em_tree->modified_extents);
 			write_unlock(&em_tree->lock);
 			if (ret != -EEXIST) {
 				free_extent_map(em);
@@ -891,10 +895,14 @@ static noinline int __cow_file_range(struct btrfs_trans_handle *trans,
 		em->orig_block_len = ins.offset;
 		em->bdev = root->fs_info->fs_devices->latest_bdev;
 		set_bit(EXTENT_FLAG_PINNED, &em->flags);
+		em->generation = -1;
 
 		while (1) {
 			write_lock(&em_tree->lock);
 			ret = add_extent_mapping(em_tree, em);
+			if (!ret)
+				list_move(&em->list,
+					  &em_tree->modified_extents);
 			write_unlock(&em_tree->lock);
 			if (ret != -EEXIST) {
 				free_extent_map(em);
@@ -1321,7 +1329,7 @@ out_check:
 			em = alloc_extent_map();
 			BUG_ON(!em); /* -ENOMEM */
 			em->start = cur_offset;
-			em->orig_start = em->start;
+			em->orig_start = em->start - extent_offset;
 			em->len = num_bytes;
 			em->block_len = num_bytes;
 			em->block_start = disk_bytenr;
@@ -1329,9 +1337,13 @@ out_check:
 			em->bdev = root->fs_info->fs_devices->latest_bdev;
 			set_bit(EXTENT_FLAG_PINNED, &em->flags);
 			set_bit(EXTENT_FLAG_FILLING, &em->flags);
+			em->generation = -1;
 			while (1) {
 				write_lock(&em_tree->lock);
 				ret = add_extent_mapping(em_tree, em);
+				if (!ret)
+					list_move(&em->list,
+						  &em_tree->modified_extents);
 				write_unlock(&em_tree->lock);
 				if (ret != -EEXIST) {
 					free_extent_map(em);
@@ -6366,10 +6378,13 @@ static struct extent_map *btrfs_new_extent_direct(struct inode *inode,
 	 */
 	em->flags = 0;
 	set_bit(EXTENT_FLAG_PINNED, &em->flags);
+	em->generation = -1;
 
 	while (insert) {
 		write_lock(&em_tree->lock);
 		ret = add_extent_mapping(em_tree, em);
+		if (!ret)
+			list_move(&em->list, &em_tree->modified_extents);
 		write_unlock(&em_tree->lock);
 		if (ret != -EEXIST)
 			break;
@@ -6570,6 +6585,7 @@ static struct extent_map *create_pinned_em(struct inode *inode, u64 start,
 	em->block_start = block_start;
 	em->bdev = root->fs_info->fs_devices->latest_bdev;
 	em->orig_block_len = orig_block_len;
+	em->generation = -1;
 	set_bit(EXTENT_FLAG_PINNED, &em->flags);
 	if (type == BTRFS_ORDERED_PREALLOC)
 		set_bit(EXTENT_FLAG_FILLING, &em->flags);
@@ -6579,6 +6595,9 @@ static struct extent_map *create_pinned_em(struct inode *inode, u64 start,
 				em->start + em->len - 1, 0);
 		write_lock(&em_tree->lock);
 		ret = add_extent_mapping(em_tree, em);
+		if (!ret)
+			list_move(&em->list,
+				  &em_tree->modified_extents);
 		write_unlock(&em_tree->lock);
 	} while (ret == -EEXIST);
 
