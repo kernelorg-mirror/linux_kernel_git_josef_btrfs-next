@@ -194,6 +194,7 @@ void btrfs_add_ordered_operation(struct btrfs_trans_handle *trans,
 				 struct btrfs_root *root,
 				 struct inode *inode);
 void btrfs_wait_ordered_extents(struct btrfs_root *root, int delay_iput);
+int btrfs_wait_ordered_dio(struct inode *inode, u64 start, u64 len);
 int __init ordered_data_init(void);
 void ordered_data_exit(void);
 #endif

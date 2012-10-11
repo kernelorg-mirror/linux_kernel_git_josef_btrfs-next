@@ -1366,14 +1366,25 @@ static ssize_t __btrfs_direct_write(struct kiocb *iocb,
 				    loff_t *ppos, size_t count, size_t ocount)
 {
 	struct file *file = iocb->ki_filp;
+	struct inode *inode = fdentry(file)->d_inode;
 	struct iov_iter i;
 	ssize_t written;
 	ssize_t written_buffered;
 	loff_t endbyte;
 	int err;
+	bool sync = (file->f_flags & O_DSYNC) || IS_SYNC(file->f_mapping->host);
 
 	written = generic_file_direct_write(iocb, iov, &nr_segs, pos, ppos,
 					    count, ocount);
+
+	/* If we aren't sync we need to wait for the io to complete */
+	if (!sync && written > 0) {
+		err = btrfs_wait_ordered_dio(inode, pos, written);
+		if (err) {
+			written = 0;
+			goto out;
+		}
+	}
 
 	if (written < 0 || written == count)
 		return written;

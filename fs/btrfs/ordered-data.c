@@ -331,10 +331,12 @@ int btrfs_dec_test_first_ordered_pending(struct inode *inode,
 	if (!uptodate)
 		set_bit(BTRFS_ORDERED_IOERR, &entry->flags);
 
-	if (entry->bytes_left == 0)
+	if (entry->bytes_left == 0) {
 		ret = test_and_set_bit(BTRFS_ORDERED_IO_DONE, &entry->flags);
-	else
+		wake_up(&entry->wait);
+	} else {
 		ret = 1;
+	}
 out:
 	if (!ret && cached && entry) {
 		*cached = entry;
@@ -643,6 +645,48 @@ void btrfs_start_ordered_extent(struct inode *inode,
 		wait_event(entry->wait, test_bit(BTRFS_ORDERED_COMPLETE,
 						 &entry->flags));
 	}
+}
+
+int btrfs_wait_ordered_dio(struct inode *inode, u64 start, u64 len)
+{
+	u64 end;
+	u64 orig_end;
+	struct btrfs_ordered_extent *ordered;
+	int err = 0;
+
+	if (start + len < start) {
+		orig_end = INT_LIMIT(loff_t);
+	} else {
+		orig_end = start + len - 1;
+		if (orig_end > INT_LIMIT(loff_t))
+			orig_end = INT_LIMIT(loff_t);
+	}
+
+	end = orig_end;
+	while (1) {
+		ordered = btrfs_lookup_first_ordered_extent(inode, end);
+		if (!ordered)
+			break;
+		if (ordered->file_offset > orig_end) {
+			btrfs_put_ordered_extent(ordered);
+			break;
+		}
+		if (ordered->file_offset + ordered->len < start) {
+			btrfs_put_ordered_extent(ordered);
+			break;
+		}
+		wait_event(ordered->wait,
+			   test_bit(BTRFS_ORDERED_IO_DONE, &ordered->flags));
+		end = ordered->file_offset;
+		if (!err && test_bit(BTRFS_ORDERED_IOERR, &ordered->flags))
+			err = -EIO;
+		btrfs_put_ordered_extent(ordered);
+		if (end == 0 || end == start)
+			break;
+		end--;
+	}
+
+	return err;
 }
 
 /*
