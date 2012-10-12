@@ -2281,6 +2281,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	unsigned long log_transid = 0;
 
 	mutex_lock(&root->log_mutex);
+	log_transid = root->log_transid;
 	index1 = root->log_transid % 2;
 	if (atomic_read(&root->log_commit[index1])) {
 		wait_log_commit(trans, root, root->log_transid);
@@ -2308,11 +2309,11 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	/* bail out if we need to do a full commit */
 	if (root->fs_info->last_trans_log_full_commit == trans->transid) {
 		ret = -EAGAIN;
+		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&root->log_mutex);
 		goto out;
 	}
 
-	log_transid = root->log_transid;
 	if (log_transid % 2 == 0)
 		mark = EXTENT_DIRTY;
 	else
@@ -2324,6 +2325,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	ret = btrfs_write_marked_extents(log, &log->dirty_log_pages, mark);
 	if (ret) {
 		btrfs_abort_transaction(trans, root, ret);
+		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&root->log_mutex);
 		goto out;
 	}
@@ -2363,6 +2365,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		}
 		root->fs_info->last_trans_log_full_commit = trans->transid;
 		btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
+		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);
 		ret = -EAGAIN;
 		goto out;
@@ -2373,6 +2376,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
 		wait_log_commit(trans, log_root_tree,
 				log_root_tree->log_transid);
+		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);
 		ret = 0;
 		goto out;
@@ -2392,6 +2396,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	 */
 	if (root->fs_info->last_trans_log_full_commit == trans->transid) {
 		btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
+		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);
 		ret = -EAGAIN;
 		goto out_wake_log_root;
@@ -2402,10 +2407,12 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 				EXTENT_DIRTY | EXTENT_NEW);
 	if (ret) {
 		btrfs_abort_transaction(trans, root, ret);
+		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);
 		goto out_wake_log_root;
 	}
 	btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
+	btrfs_wait_logged_extents(log, log_transid);
 
 	btrfs_set_super_log_root(root->fs_info->super_for_commit,
 				log_root_tree->node->start);
@@ -3244,12 +3251,16 @@ static int log_one_extent(struct btrfs_trans_handle *trans,
 	struct btrfs_root *log = root->log_root;
 	struct btrfs_file_extent_item *fi;
 	struct extent_buffer *leaf;
+	struct btrfs_ordered_extent *ordered;
 	struct list_head ordered_sums;
 	struct btrfs_key key;
-	u64 csum_offset = em->mod_start - em->start;
-	u64 csum_len = em->mod_len;
+	u64 mod_start = em->mod_start;
+	u64 mod_len = em->mod_len;
+	u64 csum_offset;
+	u64 csum_len;
 	u64 extent_offset = em->start - em->orig_start;
 	int ret;
+	int index = log->log_transid % 2;
 	bool skip_csum = BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM;
 
 	INIT_LIST_HEAD(&ordered_sums);
@@ -3312,6 +3323,63 @@ static int log_one_extent(struct btrfs_trans_handle *trans,
 	if (skip_csum)
 		return 0;
 
+	/*
+	 * First check and see if our csums are on our outstanding ordered
+	 * extents.
+	 */
+	spin_lock(&log->log_extents_lock[index]);
+	list_for_each_entry(ordered, &log->logged_list[index], log_list) {
+		struct btrfs_ordered_sum *sum;
+
+		if (!mod_len)
+			break;
+
+		if (ordered->inode != inode)
+			continue;
+
+		if (ordered->file_offset + ordered->len <= mod_start ||
+		    mod_start + mod_len <= ordered->file_offset)
+			continue;
+
+		spin_unlock(&log->log_extents_lock[index]);
+
+		wait_event(ordered->wait, ordered->csum_bytes_left == 0);
+
+		list_for_each_entry(sum, &ordered->list, list) {
+			ret = btrfs_csum_file_blocks(trans, log, sum);
+			if (ret)
+				break;
+		}
+
+		if (ret)
+			break;
+
+		if (ordered->file_offset > mod_start) {
+			if (ordered->file_offset + ordered->len >=
+			    mod_start + mod_len)
+				mod_len = 0;
+		} else {
+			if (ordered->file_offset + ordered->len <
+			    mod_start + mod_len) {
+				mod_len = (mod_start + mod_len) -
+					(ordered->file_offset + ordered->len);
+				mod_start = ordered->file_offset +
+					ordered->len;
+			} else {
+				mod_len = 0;
+			}
+		}
+
+		spin_lock(&log->log_extents_lock[index]);
+	}
+	spin_unlock(&log->log_extents_lock[index]);
+
+	if (!mod_len || ret)
+		return ret;
+
+	csum_offset = mod_start - em->start;
+	csum_len = mod_len;
+
 	/* block start is already adjusted for the file extent offset. */
 	ret = btrfs_lookup_csums_range(log->fs_info->csum_root,
 				       em->block_start + csum_offset,
@@ -3343,6 +3411,7 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 	struct extent_map_tree *tree = &BTRFS_I(inode)->extent_tree;
 	u64 test_gen;
 	int ret = 0;
+	int num = 0;
 
 	INIT_LIST_HEAD(&extents);
 
@@ -3351,27 +3420,42 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 
 	list_for_each_entry_safe(em, n, &tree->modified_extents, list) {
 		list_del_init(&em->list);
+
+		/*
+		 * Just an arbitrary number, this can be really CPU intensive
+		 * once we start getting a lot of extents, and really once we
+		 * have a bunch of extents we just want to commit since it will
+		 * be faster.
+		 */
+		if (++num > 32768) {
+			list_del_init(&tree->modified_extents);
+			ret = -EFBIG;
+			goto process;
+		}
+
 		if (em->generation <= test_gen)
 			continue;
 		/* Need a ref to keep it from getting evicted from cache */
 		atomic_inc(&em->refs);
 		set_bit(EXTENT_FLAG_LOGGING, &em->flags);
 		list_add_tail(&em->list, &extents);
+		num++;
 	}
 
 	list_sort(NULL, &extents, extent_cmp);
 
+process:
 	while (!list_empty(&extents)) {
 		em = list_entry(extents.next, struct extent_map, list);
 
 		list_del_init(&em->list);
-		clear_bit(EXTENT_FLAG_LOGGING, &em->flags);
 
 		/*
 		 * If we had an error we just need to delete everybody from our
 		 * private list.
 		 */
 		if (ret) {
+			clear_em_logging(tree, em);
 			free_extent_map(em);
 			continue;
 		}
@@ -3379,8 +3463,9 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 		write_unlock(&tree->lock);
 
 		ret = log_one_extent(trans, inode, root, em, path);
-		free_extent_map(em);
 		write_lock(&tree->lock);
+		clear_em_logging(tree, em);
+		free_extent_map(em);
 	}
 	WARN_ON(!list_empty(&extents));
 	write_unlock(&tree->lock);
@@ -3461,6 +3546,8 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 	}
 
 	mutex_lock(&BTRFS_I(inode)->log_mutex);
+
+	btrfs_get_logged_extents(log, inode);
 
 	/*
 	 * a brute force approach to making sure we get the most uptodate
@@ -3605,6 +3692,8 @@ log_extents:
 	BTRFS_I(inode)->logged_trans = trans->transid;
 	BTRFS_I(inode)->last_log_commit = BTRFS_I(inode)->last_sub_trans;
 out_unlock:
+	if (err)
+		btrfs_free_logged_extents(log, log->log_transid);
 	mutex_unlock(&BTRFS_I(inode)->log_mutex);
 
 	btrfs_free_path(path);
@@ -3771,7 +3860,6 @@ int btrfs_log_inode_parent(struct btrfs_trans_handle *trans,
 end_trans:
 	dput(old_parent);
 	if (ret < 0) {
-		WARN_ON(ret != -ENOSPC);
 		root->fs_info->last_trans_log_full_commit = trans->transid;
 		ret = 1;
 	}
