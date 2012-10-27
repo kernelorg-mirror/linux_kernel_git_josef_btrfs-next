@@ -308,8 +308,8 @@ enum {
 	Opt_compress_type, Opt_compress_force, Opt_compress_force_type,
 	Opt_notreelog, Opt_ratio, Opt_flushoncommit, Opt_discard,
 	Opt_space_cache, Opt_clear_cache, Opt_user_subvol_rm_allowed,
-	Opt_enospc_debug, Opt_subvolrootid, Opt_defrag, Opt_inode_cache,
-	Opt_no_space_cache, Opt_recovery, Opt_skip_balance,
+	Opt_enospc_debug, Opt_subvolrootid, Opt_defrag, Opt_sa_defrag,
+	Opt_inode_cache, Opt_no_space_cache, Opt_recovery, Opt_skip_balance,
 	Opt_check_integrity, Opt_check_integrity_including_extent_data,
 	Opt_check_integrity_print_mask, Opt_fatal_errors,
 	Opt_err,
@@ -344,6 +344,7 @@ static match_table_t tokens = {
 	{Opt_enospc_debug, "enospc_debug"},
 	{Opt_subvolrootid, "subvolrootid=%d"},
 	{Opt_defrag, "autodefrag"},
+	{Opt_sa_defrag, "snap_aware_defrag"},
 	{Opt_inode_cache, "inode_cache"},
 	{Opt_no_space_cache, "nospace_cache"},
 	{Opt_recovery, "recovery"},
@@ -563,6 +564,11 @@ int btrfs_parse_options(struct btrfs_root *root, char *options)
 		case Opt_defrag:
 			printk(KERN_INFO "btrfs: enabling auto defrag\n");
 			btrfs_set_opt(info->mount_opt, AUTO_DEFRAG);
+			break;
+		case Opt_sa_defrag:
+			printk(KERN_INFO "btrfs: enabling snapshot-aware"
+			       " defrag\n");
+			btrfs_set_opt(info->mount_opt, SA_DEFRAG);
 			break;
 		case Opt_recovery:
 			printk(KERN_INFO "btrfs: enabling auto recovery\n");
@@ -935,6 +941,8 @@ static int btrfs_show_options(struct seq_file *seq, struct dentry *dentry)
 		seq_puts(seq, ",enospc_debug");
 	if (btrfs_test_opt(root, AUTO_DEFRAG))
 		seq_puts(seq, ",autodefrag");
+	if (btrfs_test_opt(root, SA_DEFRAG))
+		seq_puts(seq, ",snap_aware_defrag");
 	if (btrfs_test_opt(root, INODE_MAP_CACHE))
 		seq_puts(seq, ",inode_cache");
 	if (btrfs_test_opt(root, SKIP_BALANCE))

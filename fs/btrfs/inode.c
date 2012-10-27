@@ -2487,13 +2487,17 @@ static int btrfs_finish_ordered_io(struct btrfs_ordered_extent *ordered_extent)
 			 ordered_extent->file_offset + ordered_extent->len - 1,
 			 0, &cached_state);
 
-	ret = test_range_bit(io_tree, ordered_extent->file_offset,
-			ordered_extent->file_offset + ordered_extent->len - 1,
-			EXTENT_DEFRAG, 1, cached_state);
-	if (ret && btrfs_root_last_snapshot(&root->root_item) >=
+	if (btrfs_test_opt(root, SA_DEFRAG)) {
+		ret = test_range_bit(io_tree, ordered_extent->file_offset,
+				     ordered_extent->file_offset +
+				     ordered_extent->len - 1,
+				     EXTENT_DEFRAG, 1, cached_state);
+		if (ret &&
+		    btrfs_root_last_snapshot(&root->root_item) >=
 						BTRFS_I(inode)->generation) {
-		/* the inode is shared */
-		new = record_old_file_extents(inode, ordered_extent);
+			/* the inode is shared */
+			new = record_old_file_extents(inode, ordered_extent);
+		}
 	}
 
 	if (nolock)

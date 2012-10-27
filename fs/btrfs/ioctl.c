@@ -1060,8 +1060,9 @@ again:
 	}
 
 
-	set_extent_defrag(&BTRFS_I(inode)->io_tree, page_start, page_end - 1,
-			  &cached_state, GFP_NOFS);
+	if (btrfs_test_opt(BTRFS_I(inode)->root, SA_DEFRAG))
+		set_extent_defrag(&BTRFS_I(inode)->io_tree, page_start,
+				  page_end - 1, &cached_state, GFP_NOFS);
 
 	unlock_extent_cached(&BTRFS_I(inode)->io_tree,
 			     page_start, page_end - 1, &cached_state,
