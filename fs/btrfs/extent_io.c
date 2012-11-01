@@ -12,6 +12,7 @@
 #include <linux/pagevec.h>
 #include <linux/prefetch.h>
 #include <linux/cleancache.h>
+#include <linux/list_sort.h>
 #include "extent_io.h"
 #include "extent_map.h"
 #include "compat.h"
@@ -2788,6 +2789,8 @@ static noinline void update_nr_written(struct page *page,
 				      struct writeback_control *wbc,
 				      unsigned long nr_written)
 {
+	if (!wbc)
+		return;
 	wbc->nr_to_write -= nr_written;
 	if (wbc->range_cyclic || (wbc->nr_to_write > 0 &&
 	    wbc->range_start == 0 && wbc->range_end == LLONG_MAX))
@@ -3245,6 +3248,61 @@ static int write_one_eb(struct extent_buffer *eb,
 	}
 
 	return ret;
+}
+
+static int eb_cmp(void *priv, struct list_head *a, struct list_head *b)
+{
+	struct extent_buffer *eb1, *eb2;
+
+	eb1 = list_entry(a, struct extent_buffer, dirty_list);
+	eb2 = list_entry(b, struct extent_buffer, dirty_list);
+
+	if (eb1->start < eb2->start)
+		return -1;
+	else if (eb1->start > eb2->start)
+		return 1;
+	return 0;
+}
+
+int btrfs_sync_eb_list(struct btrfs_fs_info *fs_info, struct list_head *list)
+{
+	struct extent_io_tree *tree = &BTRFS_I(fs_info->btree_inode)->io_tree;
+	struct extent_buffer *eb;
+	struct extent_page_data epd = {
+		.bio = NULL,
+		.tree = tree,
+		.extent_locked = 0,
+		.sync_io = 1,
+		.bio_flags = 0,
+	};
+	int ret = 0;
+	int err = 0;
+
+	list_sort(NULL, list, eb_cmp);
+
+	list_for_each_entry(eb, list, dirty_list) {
+		if (!lock_extent_buffer_for_io(eb, fs_info, &epd))
+			continue;
+
+		ret = write_one_eb(eb, fs_info, NULL, &epd);
+		if (ret && !err)
+			err = ret;
+	}
+	flush_write_bio(&epd);
+
+	while(!list_empty(list)) {
+		eb = list_first_entry(list, struct extent_buffer, dirty_list);
+		list_del_init(&eb->dirty_list);
+		if (err) {
+			free_extent_buffer(eb);
+			continue;
+		}
+
+		wait_on_extent_buffer_writeback(eb);
+		free_extent_buffer(eb);
+	}
+
+	return err;
 }
 
 int btree_write_cache_pages(struct address_space *mapping,
@@ -4024,6 +4082,7 @@ static struct extent_buffer *__alloc_extent_buffer(struct extent_io_tree *tree,
 	atomic_set(&eb->blocking_writers, 0);
 	atomic_set(&eb->spinning_readers, 0);
 	atomic_set(&eb->spinning_writers, 0);
+	INIT_LIST_HEAD(&eb->dirty_list);
 	eb->lock_nested = 0;
 	init_waitqueue_head(&eb->write_lock_wq);
 	init_waitqueue_head(&eb->read_lock_wq);

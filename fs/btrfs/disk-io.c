@@ -1197,8 +1197,9 @@ static void __setup_root(u32 nodesize, u32 leafsize, u32 sectorsize,
 	atomic_set(&root->orphan_inodes, 0);
 	root->log_transid = 0;
 	root->last_log_commit = 0;
-	extent_io_tree_init(&root->dirty_log_pages,
-			     fs_info->btree_inode->i_mapping);
+	spin_lock_init(&root->log_pages_lock);
+	INIT_LIST_HEAD(&root->dirty_log_pages[0]);
+	INIT_LIST_HEAD(&root->dirty_log_pages[1]);
 
 	memset(&root->root_key, 0, sizeof(root->root_key));
 	memset(&root->root_item, 0, sizeof(root->root_item));

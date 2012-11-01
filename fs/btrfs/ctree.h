@@ -1552,7 +1552,8 @@ struct btrfs_root {
 	struct btrfs_root_item root_item;
 	struct btrfs_key root_key;
 	struct btrfs_fs_info *fs_info;
-	struct extent_io_tree dirty_log_pages;
+	spinlock_t log_pages_lock;
+	struct list_head dirty_log_pages[2];
 
 	struct kobject root_kobj;
 	struct completion kobj_unregister;

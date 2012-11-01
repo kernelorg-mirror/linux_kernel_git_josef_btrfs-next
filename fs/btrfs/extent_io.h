@@ -136,6 +136,7 @@ struct extent_buffer {
 	atomic_t io_pages;
 	int read_mirror;
 	struct list_head leak_list;
+	struct list_head dirty_list;
 	struct rcu_head rcu_head;
 	pid_t lock_owner;
 
@@ -345,4 +346,5 @@ int repair_io_failure(struct btrfs_fs_info *fs_info, u64 start,
 int end_extent_writepage(struct page *page, int err, u64 start, u64 end);
 int repair_eb_io_failure(struct btrfs_root *root, struct extent_buffer *eb,
 			 int mirror_num);
+int btrfs_sync_eb_list(struct btrfs_fs_info *fs_info, struct list_head *list);
 #endif
