@@ -136,6 +136,7 @@ struct extent_buffer {
 	atomic_t io_pages;
 	int read_mirror;
 	struct list_head leak_list;
+	struct list_head free_list;
 	struct list_head dirty_list;
 	struct rcu_head rcu_head;
 	pid_t lock_owner;

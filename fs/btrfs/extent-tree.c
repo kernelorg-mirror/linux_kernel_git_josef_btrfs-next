@@ -4927,6 +4927,19 @@ void btrfs_prepare_extent_commit(struct btrfs_trans_handle *trans,
 	struct btrfs_caching_control *next;
 	struct btrfs_caching_control *caching_ctl;
 	struct btrfs_block_group_cache *cache;
+	struct extent_buffer *eb;
+
+	spin_lock(&fs_info->freed_ebs_lock);
+	while (!list_empty(&fs_info->freed_ebs)) {
+		eb = list_first_entry(&fs_info->freed_ebs,
+				      struct extent_buffer, free_list);
+		list_del_init(&eb->free_list);
+		spin_unlock(&fs_info->freed_ebs_lock);
+		btrfs_pin_extent(root, eb->start, eb->len, 1);
+		free_extent_buffer(eb);
+		spin_lock(&fs_info->freed_ebs_lock);
+	}
+	spin_unlock(&fs_info->freed_ebs_lock);
 
 	down_write(&fs_info->extent_commit_sem);
 
@@ -5346,6 +5359,7 @@ void btrfs_free_tree_block(struct btrfs_trans_handle *trans,
 			   u64 parent, int last_ref)
 {
 	struct btrfs_block_group_cache *cache = NULL;
+	struct btrfs_fs_info *fs_info = root->fs_info;
 	int ret;
 
 	if (root->root_key.objectid != BTRFS_TREE_LOG_OBJECTID) {
@@ -5370,6 +5384,14 @@ void btrfs_free_tree_block(struct btrfs_trans_handle *trans,
 		}
 
 		if (btrfs_header_flag(buf, BTRFS_HEADER_FLAG_WRITTEN)) {
+			if (root->objectid == BTRFS_TREE_LOG_OBJECTID) {
+				spin_lock(&fs_info->freed_ebs_lock);
+				extent_buffer_get(buf);
+				list_add_tail(&buf->free_list,
+					      &fs_info->freed_ebs);
+				spin_unlock(&fs_info->freed_ebs_lock);
+				goto out;
+			}
 			pin_down_extent(root, cache, buf->start, buf->len, 1);
 			goto out;
 		}

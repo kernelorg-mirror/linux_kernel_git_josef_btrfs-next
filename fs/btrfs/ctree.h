@@ -1378,6 +1378,9 @@ struct btrfs_fs_info {
 	 */
 	struct list_head ordered_operations;
 
+	spinlock_t freed_ebs_lock;
+	struct list_head freed_ebs;
+
 	/*
 	 * there is a pool of worker threads for checksumming during writes
 	 * and a pool for checksumming after reads.  This is because readers
