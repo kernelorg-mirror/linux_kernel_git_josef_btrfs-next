@@ -2711,7 +2711,7 @@ static noinline_for_stack int scrub_supers(struct scrub_ctx *sctx,
 	if (root->fs_info->fs_state & BTRFS_SUPER_FLAG_ERROR)
 		return -EIO;
 
-	gen = root->fs_info->last_trans_committed;
+	gen = atomic64_read(&root->fs_info->last_trans_committed);
 
 	for (i = 0; i < BTRFS_SUPER_MIRROR_MAX; i++) {
 		bytenr = btrfs_sb_offset(i);

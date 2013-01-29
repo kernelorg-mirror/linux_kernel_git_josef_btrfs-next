@@ -1288,7 +1288,7 @@ struct btrfs_fs_info {
 	struct btrfs_block_rsv empty_block_rsv;
 
 	atomic64_t generation;
-	u64 last_trans_committed;
+	atomic64_t last_trans_committed;
 
 	/*
 	 * this is updated to the current trans every time a full commit

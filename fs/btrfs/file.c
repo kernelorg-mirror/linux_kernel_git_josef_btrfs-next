@@ -1706,7 +1706,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	if (btrfs_inode_in_log(inode,
 	    atomic64_read(&root->fs_info->generation)) ||
 	    BTRFS_I(inode)->last_trans <=
-	    root->fs_info->last_trans_committed) {
+	    atomic64_read(&root->fs_info->last_trans_committed)) {
 		BTRFS_I(inode)->last_trans = 0;
 
 		/*

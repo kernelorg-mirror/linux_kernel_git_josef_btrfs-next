@@ -470,7 +470,8 @@ int btrfs_wait_for_commit(struct btrfs_root *root, u64 transid)
 	int ret = 0;
 
 	if (transid) {
-		if (transid <= root->fs_info->last_trans_committed)
+		if (transid <=
+		    atomic64_read(&root->fs_info->last_trans_committed))
 			goto out;
 
 		ret = -EINVAL;
@@ -1742,7 +1743,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	cur_trans->commit_done = 1;
 
-	root->fs_info->last_trans_committed = cur_trans->transid;
+	atomic64_set(&root->fs_info->last_trans_committed, cur_trans->transid);
 
 	wake_up(&cur_trans->commit_wait);
 

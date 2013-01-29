@@ -2507,7 +2507,7 @@ retry_root_backup:
 	}
 
 	atomic64_set(&fs_info->generation, generation);
-	fs_info->last_trans_committed = generation;
+	atomic64_set(&fs_info->last_trans_committed, generation);
 
 	ret = btrfs_recover_balance(fs_info);
 	if (ret) {

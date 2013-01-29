@@ -3490,7 +3490,7 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 	INIT_LIST_HEAD(&extents);
 
 	write_lock(&tree->lock);
-	test_gen = root->fs_info->last_trans_committed;
+	test_gen = atomic64_read(&root->fs_info->last_trans_committed);
 
 	list_for_each_entry_safe(em, n, &tree->modified_extents, list) {
 		list_del_init(&em->list);
@@ -3610,7 +3610,8 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 
 	/* Only run delayed items if we are a dir or a new file */
 	if (S_ISDIR(inode->i_mode) ||
-	    BTRFS_I(inode)->generation > root->fs_info->last_trans_committed) {
+	    BTRFS_I(inode)->generation >
+	    atomic64_read(&root->fs_info->last_trans_committed)) {
 		ret = btrfs_commit_inode_delayed_items(trans, inode);
 		if (ret) {
 			btrfs_free_path(path);
@@ -3856,7 +3857,8 @@ int btrfs_log_inode_parent(struct btrfs_trans_handle *trans,
 	struct super_block *sb;
 	struct dentry *old_parent = NULL;
 	int ret = 0;
-	u64 last_committed = root->fs_info->last_trans_committed;
+	u64 last_committed = atomic64_read(
+			     &root->fs_info->last_trans_committed);
 
 	sb = inode->i_sb;
 
@@ -3866,7 +3868,7 @@ int btrfs_log_inode_parent(struct btrfs_trans_handle *trans,
 	}
 
 	if (root->fs_info->last_trans_log_full_commit >
-	    root->fs_info->last_trans_committed) {
+	    atomic64_read(&root->fs_info->last_trans_committed)) {
 		ret = 1;
 		goto end_no_trans;
 	}
@@ -3918,7 +3920,7 @@ int btrfs_log_inode_parent(struct btrfs_trans_handle *trans,
 			break;
 
 		if (BTRFS_I(inode)->generation >
-		    root->fs_info->last_trans_committed) {
+		    atomic64_read(&root->fs_info->last_trans_committed)) {
 			ret = btrfs_log_inode(trans, root, inode, inode_only);
 			if (ret)
 				goto end_trans;
@@ -4180,9 +4182,9 @@ int btrfs_log_new_name(struct btrfs_trans_handle *trans,
 	 * from hasn't been logged, we don't need to log it
 	 */
 	if (BTRFS_I(inode)->logged_trans <=
-	    root->fs_info->last_trans_committed &&
+	    atomic64_read(&root->fs_info->last_trans_committed) &&
 	    (!old_dir || BTRFS_I(old_dir)->logged_trans <=
-		    root->fs_info->last_trans_committed))
+		    atomic64_read(&root->fs_info->last_trans_committed)))
 		return 0;
 
 	return btrfs_log_inode_parent(trans, root, inode, parent, 1);
