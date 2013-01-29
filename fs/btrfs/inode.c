@@ -7444,7 +7444,8 @@ static int btrfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 
 	if (unlikely(old_ino == BTRFS_FIRST_FREE_OBJECTID)) {
 		/* force full log commit if subvolume involved. */
-		root->fs_info->last_trans_log_full_commit = trans->transid;
+		atomic64_set(&root->fs_info->last_trans_log_full_commit,
+			     trans->transid);
 	} else {
 		ret = btrfs_insert_inode_ref(trans, dest,
 					     new_dentry->d_name.name,

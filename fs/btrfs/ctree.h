@@ -1294,7 +1294,7 @@ struct btrfs_fs_info {
 	 * this is updated to the current trans every time a full commit
 	 * is required instead of the faster short fsync log commits
 	 */
-	u64 last_trans_log_full_commit;
+	atomic64_t last_trans_log_full_commit;
 	unsigned long mount_opt;
 	unsigned long compress_type:4;
 	u64 max_inline;
