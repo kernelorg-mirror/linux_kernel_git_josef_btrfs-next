@@ -1287,7 +1287,7 @@ struct btrfs_fs_info {
 
 	struct btrfs_block_rsv empty_block_rsv;
 
-	u64 generation;
+	atomic64_t generation;
 	u64 last_trans_committed;
 
 	/*

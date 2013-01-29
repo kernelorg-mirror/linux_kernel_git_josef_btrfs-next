@@ -1365,10 +1365,11 @@ noinline int btrfs_cow_block(struct btrfs_trans_handle *trans,
 		       (unsigned long long)
 		       root->fs_info->running_transaction->transid);
 
-	if (trans->transid != root->fs_info->generation)
+	if (trans->transid != atomic64_read(&root->fs_info->generation))
 		WARN(1, KERN_CRIT "trans %llu running %llu\n",
 		       (unsigned long long)trans->transid,
-		       (unsigned long long)root->fs_info->generation);
+		       (unsigned long long)atomic64_read(
+		       &root->fs_info->generation));
 
 	if (!should_cow_block(trans, root, buf)) {
 		*cow_ret = buf;
@@ -1465,7 +1466,7 @@ int btrfs_realloc_node(struct btrfs_trans_handle *trans,
 		return 0;
 
 	WARN_ON(trans->transaction != root->fs_info->running_transaction);
-	WARN_ON(trans->transid != root->fs_info->generation);
+	WARN_ON(trans->transid != atomic64_read(&root->fs_info->generation));
 
 	parent_nritems = btrfs_header_nritems(parent);
 	blocksize = btrfs_level_size(root, parent_level - 1);

@@ -1204,7 +1204,7 @@ static void __setup_root(u32 nodesize, u32 leafsize, u32 sectorsize,
 	memset(&root->root_item, 0, sizeof(root->root_item));
 	memset(&root->defrag_progress, 0, sizeof(root->defrag_progress));
 	memset(&root->root_kobj, 0, sizeof(root->root_kobj));
-	root->defrag_trans_start = fs_info->generation;
+	root->defrag_trans_start = atomic64_read(&fs_info->generation);
 	init_completion(&root->kobj_unregister);
 	root->defrag_running = 0;
 	root->root_key.objectid = objectid;
@@ -2506,7 +2506,7 @@ retry_root_backup:
 		fs_info->pending_quota_state = 1;
 	}
 
-	fs_info->generation = generation;
+	atomic64_set(&fs_info->generation, generation);
 	fs_info->last_trans_committed = generation;
 
 	ret = btrfs_recover_balance(fs_info);
@@ -3441,12 +3441,12 @@ void btrfs_mark_buffer_dirty(struct extent_buffer *buf)
 	int was_dirty;
 
 	btrfs_assert_tree_locked(buf);
-	if (transid != root->fs_info->generation)
+	if (transid != atomic64_read(&root->fs_info->generation))
 		WARN(1, KERN_CRIT "btrfs transid mismatch buffer %llu, "
 		       "found %llu running %llu\n",
 			(unsigned long long)buf->start,
 			(unsigned long long)transid,
-			(unsigned long long)root->fs_info->generation);
+			(u64)atomic64_read(&root->fs_info->generation));
 	was_dirty = set_extent_buffer_dirty(buf);
 	if (!was_dirty) {
 		spin_lock(&root->fs_info->delalloc_lock);

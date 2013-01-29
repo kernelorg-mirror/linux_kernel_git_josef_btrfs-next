@@ -1602,7 +1602,8 @@ static ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 	 * otherwise subsequent syncs to a file that's been synced in this
 	 * transaction will appear to have already occured.
 	 */
-	BTRFS_I(inode)->last_trans = root->fs_info->generation + 1;
+	BTRFS_I(inode)->last_trans = atomic64_read(&root->fs_info->generation) +
+				     1;
 	BTRFS_I(inode)->last_sub_trans = root->log_transid;
 	if (num_written > 0 || num_written == -EIOCBQUEUED) {
 		err = generic_write_sync(file, pos, num_written);
@@ -1702,7 +1703,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	 * syncing
 	 */
 	smp_mb();
-	if (btrfs_inode_in_log(inode, root->fs_info->generation) ||
+	if (btrfs_inode_in_log(inode,
+	    atomic64_read(&root->fs_info->generation)) ||
 	    BTRFS_I(inode)->last_trans <=
 	    root->fs_info->last_trans_committed) {
 		BTRFS_I(inode)->last_trans = 0;

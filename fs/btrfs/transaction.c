@@ -160,8 +160,8 @@ loop:
 	list_add_tail(&cur_trans->list, &fs_info->trans_list);
 	extent_io_tree_init(&cur_trans->dirty_pages,
 			     fs_info->btree_inode->i_mapping);
-	fs_info->generation++;
-	cur_trans->transid = fs_info->generation;
+	atomic64_inc(&fs_info->generation);
+	cur_trans->transid = atomic64_read(&fs_info->generation);
 	fs_info->running_transaction = cur_trans;
 	cur_trans->aborted = 0;
 	spin_unlock(&fs_info->trans_lock);

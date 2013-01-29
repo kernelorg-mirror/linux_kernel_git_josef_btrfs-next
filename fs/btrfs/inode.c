@@ -2650,7 +2650,8 @@ static void btrfs_read_locked_inode(struct inode *inode)
 	 * idea about which extents were modified before we were evicted from
 	 * cache.
 	 */
-	if (BTRFS_I(inode)->last_trans == root->fs_info->generation)
+	if (BTRFS_I(inode)->last_trans ==
+	    atomic64_read(&root->fs_info->generation))
 		set_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
 			&BTRFS_I(inode)->runtime_flags);
 
@@ -6914,7 +6915,7 @@ again:
 	set_page_dirty(page);
 	SetPageUptodate(page);
 
-	BTRFS_I(inode)->last_trans = root->fs_info->generation;
+	BTRFS_I(inode)->last_trans = atomic64_read(&root->fs_info->generation);
 	BTRFS_I(inode)->last_sub_trans = BTRFS_I(inode)->root->log_transid;
 	BTRFS_I(inode)->last_log_commit = BTRFS_I(inode)->root->last_log_commit;
 

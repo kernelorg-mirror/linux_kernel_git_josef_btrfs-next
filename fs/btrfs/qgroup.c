@@ -290,7 +290,7 @@ int btrfs_read_qgroup_config(struct btrfs_fs_info *fs_info)
 				goto out;
 			}
 			if (btrfs_qgroup_status_generation(l, ptr) !=
-			    fs_info->generation) {
+			    atomic64_read(&fs_info->generation)) {
 				flags |= BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT;
 				printk(KERN_ERR
 					"btrfs: qgroup generation mismatch, "

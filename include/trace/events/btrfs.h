@@ -71,7 +71,8 @@ TRACE_EVENT(btrfs_transaction_commit,
 	),
 
 	TP_fast_assign(
-		__entry->generation	= root->fs_info->generation;
+		__entry->generation	=
+				atomic64_read(&root->fs_info->generation);
 		__entry->root_objectid	= root->root_key.objectid;
 	),
 
