@@ -2804,25 +2804,30 @@ recovery_tree_root:
 	goto retry_root_backup;
 }
 
-static void btrfs_end_buffer_write_sync(struct buffer_head *bh, int uptodate)
+static void btrfs_end_super_write_sync(struct bio *bio, int err)
 {
-	if (uptodate) {
-		set_buffer_uptodate(bh);
-	} else {
+	struct bio_vec *bvec = bio->bi_io_vec + bio->bi_vcnt - 1;
+
+	do {
+		struct page *page = bvec->bv_page;
+
+		if (err) {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		}
+		end_page_writeback(page);
+		bvec--;
+	} while (bvec >= bio->bi_io_vec);
+
+	if (err) {
 		struct btrfs_device *device = (struct btrfs_device *)
-			bh->b_private;
+			bio->bi_private;
 
 		printk_ratelimited_in_rcu(KERN_WARNING "lost page write due to "
 					  "I/O error on %s\n",
 					  rcu_str_deref(device->name));
-		/* note, we dont' set_buffer_write_io_error because we have
-		 * our own ways of dealing with the IO errors
-		 */
-		clear_buffer_uptodate(bh);
 		btrfs_dev_stat_inc_and_print(device, BTRFS_DEV_STAT_WRITE_ERRS);
 	}
-	unlock_buffer(bh);
-	put_bh(bh);
 }
 
 struct buffer_head *btrfs_read_dev_super(struct block_device *bdev)
@@ -2880,9 +2885,10 @@ static int write_dev_supers(struct btrfs_device *device,
 			    struct btrfs_super_block *sb,
 			    int do_barriers, int wait, int max_mirrors)
 {
-	struct buffer_head *bh;
+	struct block_device *bdev = device->bdev;
+	struct bio *bio;
+	struct page *page;
 	int i;
-	int ret;
 	int errors = 0;
 	u32 crc;
 	u64 bytenr;
@@ -2896,20 +2902,28 @@ static int write_dev_supers(struct btrfs_device *device,
 			break;
 
 		if (wait) {
-			bh = __find_get_block(device->bdev, bytenr / 4096,
-					      BTRFS_SUPER_INFO_SIZE);
-			BUG_ON(!bh);
-			wait_on_buffer(bh);
-			if (!buffer_uptodate(bh))
+			page = find_get_page(bdev->bd_inode->i_mapping,
+					     bytenr >> PAGE_CACHE_SHIFT);
+			if (!page) {
+				/* well th is shouldn't happen */
+				WARN_ON(1);
+				errors++;
+				continue;
+			}
+
+			wait_on_page_writeback(page);
+			if (!PageUptodate(page))
 				errors++;
 
 			/* drop our reference */
-			brelse(bh);
+			page_cache_release(page);
 
 			/* drop the reference from the wait == 0 run */
-			brelse(bh);
+			page_cache_release(page);
 			continue;
 		} else {
+			void *data;
+
 			btrfs_set_super_bytenr(sb, bytenr);
 
 			crc = ~(u32)0;
@@ -2923,27 +2937,62 @@ static int write_dev_supers(struct btrfs_device *device,
 			 * one reference for us, and we leave it for the
 			 * caller
 			 */
-			bh = __getblk(device->bdev, bytenr / 4096,
-				      BTRFS_SUPER_INFO_SIZE);
-			memcpy(bh->b_data, sb, BTRFS_SUPER_INFO_SIZE);
+			bio = bio_alloc(GFP_NOFS, 1);
+			if (!bio) {
+				errors++;
+				continue;
+			}
 
-			/* one reference for submit_bh */
-			get_bh(bh);
+			bio->bi_sector = bytenr >> 9;
+			bio->bi_private = device;
+			bio->bi_size = 0;
+			bio->bi_bdev = device->bdev;
+			bio->bi_end_io = btrfs_end_super_write_sync;
 
-			set_buffer_uptodate(bh);
-			lock_buffer(bh);
-			bh->b_end_io = btrfs_end_buffer_write_sync;
-			bh->b_private = device;
+			page = find_or_create_page(bdev->bd_inode->i_mapping,
+						   bytenr >> PAGE_CACHE_SHIFT,
+						   GFP_NOFS);
+			if (!page) {
+				errors++;
+				bio_put(bio);
+				continue;
+			}
+
+			/*
+			 * we need to hold a reference so this page sticks
+			 * around long enough for us to check to make sure the
+			 * writeback happend properly.
+			 */
+			page_cache_get(page);
+
+			data = kmap(page);
+			memcpy(data, sb, BTRFS_SUPER_INFO_SIZE);
+			kunmap(page);
+			SetPageUptodate(page);
+			set_page_writeback(page);
+			unlock_page(page);
+
+			if (bio_add_page(bio, page, BTRFS_SUPER_INFO_SIZE,
+					 0) < BTRFS_SUPER_INFO_SIZE) {
+				errors++;
+				ClearPageUptodate(page);
+				end_page_writeback(page);
+				page_cache_release(page);
+				page_cache_release(page);
+				bio_put(bio);
+				continue;
+			}
+
+			page_cache_release(page);
 		}
 
 		/*
 		 * we fua the first super.  The others we allow
 		 * to go down lazy.
 		 */
-		ret = btrfsic_submit_bh(WRITE_FUA, bh);
-		if (ret)
-			errors++;
+		btrfsic_submit_bio(WRITE_FUA, bio);
 	}
+
 	return errors < i ? 0 : -1;
 }
 
@@ -3147,7 +3196,8 @@ int btrfs_calc_num_tolerated_disk_barrier_failures(
 	return num_tolerated_disk_barrier_failures;
 }
 
-int write_all_supers(struct btrfs_root *root, int max_mirrors)
+int write_ctree_super(struct btrfs_trans_handle *trans,
+		      struct btrfs_root *root, int max_mirrors)
 {
 	struct list_head *head;
 	struct btrfs_device *dev;
@@ -3232,15 +3282,6 @@ int write_all_supers(struct btrfs_root *root, int max_mirrors)
 		return -EIO;
 	}
 	return 0;
-}
-
-int write_ctree_super(struct btrfs_trans_handle *trans,
-		      struct btrfs_root *root, int max_mirrors)
-{
-	int ret;
-
-	ret = write_all_supers(root, max_mirrors);
-	return ret;
 }
 
 void btrfs_free_fs_root(struct btrfs_fs_info *fs_info, struct btrfs_root *root)
