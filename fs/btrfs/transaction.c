@@ -405,6 +405,7 @@ again:
 	h->delayed_ref_elem.seq = 0;
 	h->type = type;
 	h->allocating_chunk = false;
+	bio_list_init(&h->log_bios);
 	INIT_LIST_HEAD(&h->qgroup_ref_list);
 	INIT_LIST_HEAD(&h->new_bgs);
 
@@ -1791,7 +1792,9 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	wake_up(&root->fs_info->transaction_wait);
 
+	atomic_inc(&BTRFS_I(root->fs_info->btree_inode)->sync_writers);
 	ret = btrfs_write_and_wait_transaction(trans, root);
+	atomic_dec(&BTRFS_I(root->fs_info->btree_inode)->sync_writers);
 	if (ret) {
 		btrfs_error(root->fs_info, ret,
 			    "Error while writing out transaction.");

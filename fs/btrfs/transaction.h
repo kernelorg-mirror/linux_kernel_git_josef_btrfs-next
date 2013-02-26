@@ -18,6 +18,7 @@
 
 #ifndef __BTRFS_TRANSACTION__
 #define __BTRFS_TRANSACTION__
+#include <linux/bio.h>
 #include "btrfs_inode.h"
 #include "delayed-ref.h"
 #include "ctree.h"
@@ -71,6 +72,8 @@ struct btrfs_trans_handle {
 	short adding_csums;
 	bool allocating_chunk;
 	enum btrfs_trans_type type;
+	struct bio_list log_bios;
+
 	/*
 	 * this root is only needed to validate that the root passed to
 	 * start_transaction is the same as the one passed to end_transaction.

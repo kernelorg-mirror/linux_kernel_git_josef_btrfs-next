@@ -5163,9 +5163,21 @@ static int bio_size_ok(struct block_device *bdev, struct bio *bio,
 	return 1;
 }
 
+static void submit_atomic_bio(int rw, struct bio *bio)
+{
+	struct btrfs_trans_handle *trans = current->journal_info;
+
+	if (!trans) {
+		btrfsic_submit_bio(rw, bio);
+		return;
+	}
+
+	bio_list_add(&trans->log_bios, bio);
+}
+
 static void submit_stripe_bio(struct btrfs_root *root, struct btrfs_bio *bbio,
 			      struct bio *bio, u64 physical, int dev_nr,
-			      int rw, int async)
+			      int rw, enum btrfs_submit_flag submit)
 {
 	struct btrfs_device *dev = bbio->stripes[dev_nr].dev;
 
@@ -5188,15 +5200,27 @@ static void submit_stripe_bio(struct btrfs_root *root, struct btrfs_bio *bbio,
 	}
 #endif
 	bio->bi_bdev = dev->bdev;
-	if (async)
-		btrfs_schedule_bio(root, dev, rw, bio);
-	else
+	switch (submit) {
+	case SUBMIT_SYNC:
 		btrfsic_submit_bio(rw, bio);
+		break;
+	case SUBMIT_ASYNC:
+		btrfs_schedule_bio(root, dev, rw, bio);
+		break;
+	case SUBMIT_ATOMIC:
+		submit_atomic_bio(rw, bio);
+		break;
+	default:
+		WARN_ON(1);
+		btrfsic_submit_bio(rw, bio);
+		break;
+	}
 }
 
 static int breakup_stripe_bio(struct btrfs_root *root, struct btrfs_bio *bbio,
 			      struct bio *first_bio, struct btrfs_device *dev,
-			      int dev_nr, int rw, int async)
+			      int dev_nr, int rw,
+			      enum btrfs_submit_flag submit)
 {
 	struct bio_vec *bvec = first_bio->bi_io_vec;
 	struct bio *bio;
@@ -5215,14 +5239,14 @@ again:
 
 			atomic_inc(&bbio->stripes_pending);
 			submit_stripe_bio(root, bbio, bio, physical, dev_nr,
-					  rw, async);
+					  rw, submit);
 			physical += len;
 			goto again;
 		}
 		bvec++;
 	}
 
-	submit_stripe_bio(root, bbio, bio, physical, dev_nr, rw, async);
+	submit_stripe_bio(root, bbio, bio, physical, dev_nr, rw, submit);
 	return 0;
 }
 
@@ -5241,7 +5265,7 @@ static void bbio_error(struct btrfs_bio *bbio, struct bio *bio, u64 logical)
 }
 
 int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
-		  int mirror_num, int async_submit)
+		  int mirror_num, enum btrfs_submit_flag submit)
 {
 	struct btrfs_device *dev;
 	struct bio *first_bio = bio;
@@ -5304,7 +5328,7 @@ int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
 		if (!bio_size_ok(dev->bdev, first_bio,
 				 bbio->stripes[dev_nr].physical >> 9)) {
 			ret = breakup_stripe_bio(root, bbio, first_bio, dev,
-						 dev_nr, rw, async_submit);
+						 dev_nr, rw, submit);
 			BUG_ON(ret);
 			dev_nr++;
 			continue;
@@ -5319,7 +5343,7 @@ int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
 
 		submit_stripe_bio(root, bbio, bio,
 				  bbio->stripes[dev_nr].physical, dev_nr, rw,
-				  async_submit);
+				  submit);
 		dev_nr++;
 	}
 	return 0;

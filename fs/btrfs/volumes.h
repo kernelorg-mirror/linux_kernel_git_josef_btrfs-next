@@ -200,6 +200,12 @@ struct map_lookup {
 	struct btrfs_bio_stripe stripes[];
 };
 
+enum btrfs_submit_flag {
+	SUBMIT_SYNC	= 0,
+	SUBMIT_ASYNC	= 1,
+	SUBMIT_ATOMIC	= 2,
+};
+
 #define map_lookup_size(n) (sizeof(struct map_lookup) + \
 			    (sizeof(struct btrfs_bio_stripe) * (n)))
 
@@ -271,7 +277,7 @@ int btrfs_alloc_chunk(struct btrfs_trans_handle *trans,
 void btrfs_mapping_init(struct btrfs_mapping_tree *tree);
 void btrfs_mapping_tree_free(struct btrfs_mapping_tree *tree);
 int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
-		  int mirror_num, int async_submit);
+		  int mirror_num, enum btrfs_submit_flag submit);
 int btrfs_open_devices(struct btrfs_fs_devices *fs_devices,
 		       fmode_t flags, void *holder);
 int btrfs_scan_one_device(const char *path, fmode_t flags, void *holder,

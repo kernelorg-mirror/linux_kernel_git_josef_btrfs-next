@@ -876,7 +876,8 @@ static int __btree_submit_bio_done(struct inode *inode, int rw, struct bio *bio,
 	 * when we're called for a write, we're already in the async
 	 * submission context.  Just jump into btrfs_map_bio
 	 */
-	ret = btrfs_map_bio(BTRFS_I(inode)->root, rw, bio, mirror_num, 1);
+	ret = btrfs_map_bio(BTRFS_I(inode)->root, rw, bio, mirror_num,
+			    SUBMIT_ASYNC);
 	if (ret)
 		bio_endio(bio, ret);
 	return ret;
@@ -885,19 +886,19 @@ static int __btree_submit_bio_done(struct inode *inode, int rw, struct bio *bio,
 static int check_async_write(struct inode *inode, unsigned long bio_flags)
 {
 	if (bio_flags & EXTENT_BIO_TREE_LOG)
-		return 0;
+		return SUBMIT_SYNC;
 #ifdef CONFIG_X86
 	if (cpu_has_xmm4_2)
-		return 0;
+		return SUBMIT_SYNC;
 #endif
-	return 1;
+	return SUBMIT_ASYNC;
 }
 
 static int btree_submit_bio_hook(struct inode *inode, int rw, struct bio *bio,
 				 int mirror_num, unsigned long bio_flags,
 				 u64 bio_offset)
 {
-	int async = check_async_write(inode, bio_flags);
+	int submit = check_async_write(inode, bio_flags);
 	int ret;
 
 	if (!(rw & REQ_WRITE)) {
@@ -910,13 +911,16 @@ static int btree_submit_bio_hook(struct inode *inode, int rw, struct bio *bio,
 		if (ret)
 			goto out_w_error;
 		ret = btrfs_map_bio(BTRFS_I(inode)->root, rw, bio,
-				    mirror_num, 0);
-	} else if (!async) {
+				    mirror_num, submit);
+	} else if (submit == SUBMIT_SYNC) {
+		if (bio_flags & EXTENT_BIO_TREE_LOG)
+			submit = SUBMIT_ATOMIC;
+
 		ret = btree_csum_one_bio(bio);
 		if (ret)
 			goto out_w_error;
 		ret = btrfs_map_bio(BTRFS_I(inode)->root, rw, bio,
-				    mirror_num, 0);
+				    mirror_num, submit);
 	} else {
 		/*
 		 * kthread helpers are used to submit writes so that
@@ -2881,7 +2885,8 @@ struct buffer_head *btrfs_read_dev_super(struct block_device *bdev)
  *
  * max_mirrors == 0 means to write them all.
  */
-static int write_dev_supers(struct btrfs_device *device,
+static int write_dev_supers(struct btrfs_trans_handle *trans,
+			    struct btrfs_device *device,
 			    struct btrfs_super_block *sb,
 			    int do_barriers, int wait, int max_mirrors)
 {
@@ -2892,6 +2897,7 @@ static int write_dev_supers(struct btrfs_device *device,
 	int errors = 0;
 	u32 crc;
 	u64 bytenr;
+	int atomic = (trans && !bio_list_empty(&trans->log_bios));
 
 	if (max_mirrors == 0)
 		max_mirrors = BTRFS_SUPER_MIRROR_MAX;
@@ -2984,6 +2990,10 @@ static int write_dev_supers(struct btrfs_device *device,
 			}
 
 			page_cache_release(page);
+			if (atomic) {
+				bio_list_add(&trans->log_bios, bio);
+				continue;
+			}
 		}
 
 		/*
@@ -3252,7 +3262,8 @@ int write_ctree_super(struct btrfs_trans_handle *trans,
 		flags = btrfs_super_flags(sb);
 		btrfs_set_super_flags(sb, flags | BTRFS_HEADER_FLAG_WRITTEN);
 
-		ret = write_dev_supers(dev, sb, do_barriers, 0, max_mirrors);
+		ret = write_dev_supers(trans, dev, sb, do_barriers, 0,
+				       max_mirrors);
 		if (ret)
 			total_errors++;
 	}
@@ -3264,6 +3275,14 @@ int write_ctree_super(struct btrfs_trans_handle *trans,
 		BUG();
 	}
 
+	if (trans && !bio_list_empty(&trans->log_bios)) {
+		struct bio *bio;
+
+		/* This is where we do WRITE_ATOMIC or whatever */
+		while ((bio = bio_list_pop(&trans->log_bios)))
+			btrfsic_submit_bio(WRITE_SYNC, bio);
+	}
+
 	total_errors = 0;
 	list_for_each_entry_rcu(dev, head, dev_list) {
 		if (!dev->bdev)
@@ -3271,7 +3290,8 @@ int write_ctree_super(struct btrfs_trans_handle *trans,
 		if (!dev->in_fs_metadata || !dev->writeable)
 			continue;
 
-		ret = write_dev_supers(dev, sb, do_barriers, 1, max_mirrors);
+		ret = write_dev_supers(trans, dev, sb, do_barriers, 1,
+				       max_mirrors);
 		if (ret)
 			total_errors++;
 	}
