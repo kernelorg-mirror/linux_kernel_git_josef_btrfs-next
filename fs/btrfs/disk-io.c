@@ -238,7 +238,7 @@ out:
 	return em;
 }
 
-u32 btrfs_csum_data(struct btrfs_root *root, char *data, u32 seed, size_t len)
+u32 btrfs_csum_data(char *data, u32 seed, size_t len)
 {
 	return crc32c(seed, data, len);
 }
@@ -274,7 +274,7 @@ static int csum_tree_block(struct btrfs_root *root, struct extent_buffer *buf,
 		if (err)
 			return 1;
 		cur_len = min(len, map_len - (offset - map_start));
-		crc = btrfs_csum_data(root, kaddr + offset - map_start,
+		crc = btrfs_csum_data(kaddr + offset - map_start,
 				      crc, cur_len);
 		len -= cur_len;
 		offset += cur_len;
@@ -374,8 +374,8 @@ static int btrfs_check_super_csum(char *raw_disk_sb)
 		 * BTRFS_SUPER_INFO_SIZE range, we expect that the unused space
 		 * is filled with zeros and is included in the checkum.
 		 */
-		crc = btrfs_csum_data(NULL, raw_disk_sb + BTRFS_CSUM_SIZE,
-				crc, BTRFS_SUPER_INFO_SIZE - BTRFS_CSUM_SIZE);
+		crc = btrfs_csum_data(raw_disk_sb + BTRFS_CSUM_SIZE, crc,
+				      BTRFS_SUPER_INFO_SIZE - BTRFS_CSUM_SIZE);
 		btrfs_csum_final(crc, result);
 
 		if (memcmp(raw_disk_sb, result, csum_size))
@@ -2976,7 +2976,7 @@ static int write_dev_supers(struct btrfs_device *device,
 			btrfs_set_super_bytenr(sb, bytenr);
 
 			crc = ~(u32)0;
-			crc = btrfs_csum_data(NULL, (char *)sb +
+			crc = btrfs_csum_data((char *)sb +
 					      BTRFS_CSUM_SIZE, crc,
 					      BTRFS_SUPER_INFO_SIZE -
 					      BTRFS_CSUM_SIZE);
