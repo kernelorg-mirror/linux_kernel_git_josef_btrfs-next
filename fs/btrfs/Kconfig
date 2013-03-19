@@ -1,5 +1,5 @@
 config BTRFS_FS
-	tristate "Btrfs filesystem (EXPERIMENTAL) Unstable disk format"
+	tristate "Btrfs filesystem support"
 	depends on EXPERIMENTAL
 	select LIBCRC32C
 	select ZLIB_INFLATE
