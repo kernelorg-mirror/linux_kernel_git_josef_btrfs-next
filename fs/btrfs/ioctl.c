@@ -3693,6 +3693,7 @@ static long btrfs_ioctl_quota_ctl(struct file *file, void __user *arg)
 		goto drop_write;
 	}
 
+	down_read(&root->fs_info->subvol_sem);
 	if (sa->cmd != BTRFS_QUOTA_CTL_RESCAN) {
 		trans = btrfs_start_transaction(root, 2);
 		if (IS_ERR(trans)) {
@@ -3726,6 +3727,7 @@ static long btrfs_ioctl_quota_ctl(struct file *file, void __user *arg)
 	}
 out:
 	kfree(sa);
+	up_read(&root->fs_info->subvol_sem);
 drop_write:
 	mnt_drop_write_file(file);
 	return ret;
