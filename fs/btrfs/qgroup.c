@@ -1059,9 +1059,6 @@ int btrfs_limit_qgroup(struct btrfs_trans_handle *trans,
 	struct btrfs_qgroup *qgroup;
 	int ret = 0;
 
-	if (!quota_root)
-		return -EINVAL;
-
 	ret = update_qgroup_limit_item(trans, quota_root, qgroupid,
 				       limit->flags, limit->max_rfer,
 				       limit->max_excl, limit->rsv_rfer,
@@ -1664,4 +1661,16 @@ void assert_qgroups_uptodate(struct btrfs_trans_handle *trans)
 		trans, list_empty(&trans->qgroup_ref_list) ? "" : " not",
 		trans->delayed_ref_elem.seq);
 	BUG();
+}
+
+int btrfs_may_limit_qgroup(struct btrfs_root *root, u64 qgroupid)
+{
+	struct btrfs_qgroup *qgroup = NULL;
+
+	if (!root->fs_info->quota_root)
+		return -EINVAL;
+	qgroup = find_qgroup_rb(root->fs_info, qgroupid);
+	if (!qgroup)
+		return -ENOENT;
+	return 0;
 }

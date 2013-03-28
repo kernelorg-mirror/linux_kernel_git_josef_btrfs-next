@@ -3863,20 +3863,22 @@ static long btrfs_ioctl_qgroup_limit(struct file *file, void __user *arg)
 		ret = PTR_ERR(sa);
 		goto drop_write;
 	}
-	mutex_lock(&root->fs_info->quota_lock);
-	trans = btrfs_join_transaction(root);
-	if (IS_ERR(trans)) {
-		ret = PTR_ERR(trans);
-		goto out;
-	}
-
 	qgroupid = sa->qgroupid;
 	if (!qgroupid) {
 		/* take the current subvol as qgroup */
 		qgroupid = root->root_key.objectid;
 	}
 
-	/* FIXME: check if the IDs really exist */
+	mutex_lock(&root->fs_info->quota_lock);
+	ret = btrfs_may_limit_qgroup(root, qgroupid);
+	if (ret)
+		goto out;
+
+	trans = btrfs_join_transaction(root);
+	if (IS_ERR(trans)) {
+		ret = PTR_ERR(trans);
+		goto out;
+	}
 	ret = btrfs_limit_qgroup(trans, root->fs_info, qgroupid, &sa->lim);
 
 	err = btrfs_end_transaction(trans, root);

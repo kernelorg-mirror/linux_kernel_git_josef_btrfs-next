@@ -3094,6 +3094,7 @@ int btrfs_make_block_group(struct btrfs_trans_handle *trans,
 			   struct btrfs_root *root, u64 bytes_used,
 			   u64 type, u64 chunk_objectid, u64 chunk_offset,
 			   u64 size);
+int btrfs_may_limit_qgroup(struct btrfs_root *root, u64 qgroupid);
 int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
 			     struct btrfs_root *root, u64 group_start);
 void btrfs_create_pending_block_groups(struct btrfs_trans_handle *trans,
