@@ -755,6 +755,11 @@ static noinline int btrfs_mksubvol(struct path *parent,
 	if (btrfs_root_refs(&BTRFS_I(dir)->root->root_item) == 0)
 		goto out_up_read;
 	mutex_lock(&BTRFS_I(dir)->root->fs_info->quota_lock);
+
+	error = btrfs_may_inherit_qgroup(BTRFS_I(dir)->root, inherit);
+	if (error)
+		goto out_unlock_mutex;
+
 	if (snap_src) {
 		error = create_snapshot(snap_src, dir, dentry, name, namelen,
 					async_transid, readonly, inherit);
@@ -764,6 +769,7 @@ static noinline int btrfs_mksubvol(struct path *parent,
 	}
 	if (!error)
 		fsnotify_mkdir(dir, dentry);
+out_unlock_mutex:
 	mutex_unlock(&BTRFS_I(dir)->root->fs_info->quota_lock);
 out_up_read:
 	up_read(&BTRFS_I(dir)->root->fs_info->subvol_sem);

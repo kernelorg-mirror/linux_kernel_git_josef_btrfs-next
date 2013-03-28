@@ -1357,9 +1357,6 @@ int btrfs_qgroup_inherit(struct btrfs_trans_handle *trans,
 	if (!fs_info->quota_enabled)
 		return 0;
 
-	if (!quota_root)
-		return -EINVAL;
-
 	/*
 	 * create a tracking group for the subvol itself
 	 */
@@ -1698,4 +1695,30 @@ int btrfs_may_assign_qgroup(struct btrfs_root *root,
 	if (sa->assign)
 		return 0;
 	return -ENOENT;
+}
+
+int btrfs_may_inherit_qgroup(struct btrfs_root *root,
+			     struct btrfs_qgroup_inherit *inherit)
+{
+	u64 i = 0;
+	u64 *i_qgroups = NULL;
+	u64 nums = 0;
+	struct btrfs_qgroup *qgroup = NULL;
+
+	if (!inherit)
+		return 0;
+	if (!root->fs_info->quota_root)
+		return -EINVAL;
+
+	i_qgroups = (u64 *)(inherit + 1);
+	nums = inherit->num_qgroups + 2 * inherit->num_ref_copies +
+	       2 * inherit->num_excl_copies;
+	for (i = 0; i < nums; ++i) {
+		qgroup = find_qgroup_rb(root->fs_info, *i_qgroups);
+		if (!qgroup)
+			return -EINVAL;
+
+		++i_qgroups;
+	}
+	return 0;
 }
