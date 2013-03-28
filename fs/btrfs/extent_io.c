@@ -1777,6 +1777,37 @@ out:
 	return ret;
 }
 
+void cache_csums(struct extent_io_tree *tree, u64 start, u32 csums[],
+		 int count, int sectorsize)
+{
+	struct rb_node *node;
+	struct extent_state *state, *next;
+
+	spin_lock(&tree->lock);
+	/*
+	 * this search will find all the extents that end after
+	 * our range starts.
+	 */
+	node = tree_search(tree, start);
+	BUG_ON(!node);
+
+	state = rb_entry(node, struct extent_state, rb_node);
+	BUG_ON(state->start != start);
+
+	while (count) {
+		BUG_ON(state->end + 1 - state->start != sectorsize);
+
+		state->private = *csums++;
+		count--;
+		next = next_state(state);
+
+		BUG_ON(count && (!next || next->start != state->end + 1));
+
+		state = next;
+	}
+	spin_unlock(&tree->lock);
+}
+
 int get_state_private(struct extent_io_tree *tree, u64 start, u64 *private)
 {
 	struct rb_node *node;

@@ -175,7 +175,8 @@ static int __btrfs_lookup_bio_sums(struct btrfs_root *root,
 				   struct inode *inode, struct bio *bio,
 				   u64 logical_offset, u32 *dst, int dio)
 {
-	u32 sum;
+	u32 sum[16];
+	int len;
 	struct bio_vec *bvec = bio->bi_io_vec;
 	int bio_index = 0;
 	u64 offset = 0;
@@ -184,7 +185,8 @@ static int __btrfs_lookup_bio_sums(struct btrfs_root *root,
 	u64 disk_bytenr;
 	u32 diff;
 	u16 csum_size = btrfs_super_csum_size(root->fs_info->super_copy);
-	int ret;
+	int count;
+	int index;
 	struct btrfs_path *path;
 	struct btrfs_csum_item *item = NULL;
 	struct extent_io_tree *io_tree = &BTRFS_I(inode)->io_tree;
@@ -212,10 +214,11 @@ static int __btrfs_lookup_bio_sums(struct btrfs_root *root,
 	if (dio)
 		offset = logical_offset;
 	while (bio_index < bio->bi_vcnt) {
+		len = min_t(int, ARRAY_SIZE(sum), bio->bi_vcnt - bio_index);
 		if (!dio)
 			offset = page_offset(bvec->bv_page) + bvec->bv_offset;
-		ret = btrfs_find_ordered_sum(inode, offset, disk_bytenr, &sum);
-		if (ret == 0)
+		count = btrfs_find_ordered_sum(inode, offset, disk_bytenr, sum, len);
+		if (count)
 			goto found;
 
 		if (!item || disk_bytenr < item_start_offset ||
@@ -228,10 +231,8 @@ static int __btrfs_lookup_bio_sums(struct btrfs_root *root,
 			item = btrfs_lookup_csum(NULL, root->fs_info->csum_root,
 						 path, disk_bytenr, 0);
 			if (IS_ERR(item)) {
-				ret = PTR_ERR(item);
-				if (ret == -ENOENT || ret == -EFBIG)
-					ret = 0;
-				sum = 0;
+				count = 1;
+				sum[0] = 0;
 				if (BTRFS_I(inode)->root->root_key.objectid ==
 				    BTRFS_DATA_RELOC_TREE_OBJECTID) {
 					set_extent_bits(io_tree, offset,
@@ -267,19 +268,25 @@ static int __btrfs_lookup_bio_sums(struct btrfs_root *root,
 		diff = disk_bytenr - item_start_offset;
 		diff = diff / root->sectorsize;
 		diff = diff * csum_size;
-
-		read_extent_buffer(path->nodes[0], &sum,
+		count = min_t(int, len, (item_last_offset - disk_bytenr) /
+					root->sectorsize);
+		read_extent_buffer(path->nodes[0], sum,
 				   ((unsigned long)item) + diff,
-				   csum_size);
+				   csum_size * count);
 found:
-		if (dst)
-			*dst++ = sum;
-		else
-			set_state_private(io_tree, offset, sum);
-		disk_bytenr += bvec->bv_len;
-		offset += bvec->bv_len;
-		bio_index++;
-		bvec++;
+		if (dst) {
+			for (index = 0; index < count; index++)
+				*dst++ = sum[index];
+		} else {
+			cache_csums(io_tree, offset, sum, count,
+				    root->sectorsize);
+		}
+		while (count--) {
+			disk_bytenr += bvec->bv_len;
+			offset += bvec->bv_len;
+			bio_index++;
+			bvec++;
+		}
 	}
 	btrfs_free_path(path);
 	return 0;
