@@ -1003,15 +1003,13 @@ int btrfs_del_qgroup_relation(struct btrfs_trans_handle *trans,
 int btrfs_create_qgroup(struct btrfs_trans_handle *trans,
 			struct btrfs_fs_info *fs_info, u64 qgroupid, char *name)
 {
-	struct btrfs_root *quota_root;
+	struct btrfs_root *quota_root = fs_info->quota_root;
 	struct btrfs_qgroup *qgroup;
 	int ret = 0;
 
-	quota_root = fs_info->quota_root;
-	if (!quota_root)
-		return -EINVAL;
-
 	ret = add_qgroup_item(trans, quota_root, qgroupid);
+	if (ret)
+		return ret;
 
 	spin_lock(&fs_info->qgroup_lock);
 	qgroup = add_qgroup_rb(fs_info, qgroupid);
@@ -1026,21 +1024,8 @@ int btrfs_create_qgroup(struct btrfs_trans_handle *trans,
 int btrfs_remove_qgroup(struct btrfs_trans_handle *trans,
 			struct btrfs_fs_info *fs_info, u64 qgroupid)
 {
-	struct btrfs_root *quota_root;
-	struct btrfs_qgroup *qgroup;
+	struct btrfs_root *quota_root = fs_info->quota_root;
 	int ret = 0;
-
-	quota_root = fs_info->quota_root;
-	if (!quota_root)
-		return -EINVAL;
-
-	/* check if there are no relations to this qgroup */
-	qgroup = find_qgroup_rb(fs_info, qgroupid);
-	if (qgroup) {
-		if (!list_empty(&qgroup->groups) ||
-		    !list_empty(&qgroup->members))
-			return -EBUSY;
-	}
 
 	ret = del_qgroup_item(trans, quota_root, qgroupid);
 
@@ -1672,5 +1657,27 @@ int btrfs_may_limit_qgroup(struct btrfs_root *root, u64 qgroupid)
 	qgroup = find_qgroup_rb(root->fs_info, qgroupid);
 	if (!qgroup)
 		return -ENOENT;
+	return 0;
+}
+
+int btrfs_may_create_qgroup(struct btrfs_root *root,
+			    struct btrfs_ioctl_qgroup_create_args *sa)
+{
+	struct btrfs_qgroup *qgroup = NULL;
+
+	if (!root->fs_info->quota_root)
+		return -EINVAL;
+
+	qgroup = find_qgroup_rb(root->fs_info, sa->qgroupid);
+	if (sa->create) {
+		if (qgroup)
+			return -EEXIST;
+		return 0;
+	}
+	if (!qgroup)
+		return -ENOENT;
+	/* check if there are no relations to this qgroup */
+	if (!list_empty(&qgroup->groups) || !list_empty(&qgroup->members))
+		return -EBUSY;
 	return 0;
 }
