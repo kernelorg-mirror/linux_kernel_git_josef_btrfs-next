@@ -754,7 +754,7 @@ static noinline int btrfs_mksubvol(struct path *parent,
 
 	if (btrfs_root_refs(&BTRFS_I(dir)->root->root_item) == 0)
 		goto out_up_read;
-
+	mutex_lock(&BTRFS_I(dir)->root->fs_info->quota_lock);
 	if (snap_src) {
 		error = create_snapshot(snap_src, dir, dentry, name, namelen,
 					async_transid, readonly, inherit);
@@ -764,6 +764,7 @@ static noinline int btrfs_mksubvol(struct path *parent,
 	}
 	if (!error)
 		fsnotify_mkdir(dir, dentry);
+	mutex_unlock(&BTRFS_I(dir)->root->fs_info->quota_lock);
 out_up_read:
 	up_read(&BTRFS_I(dir)->root->fs_info->subvol_sem);
 out_dput:
@@ -3697,6 +3698,7 @@ static long btrfs_ioctl_quota_ctl(struct file *file, void __user *arg)
 		goto drop_write;
 	}
 
+	mutex_lock(&root->fs_info->quota_lock);
 	down_read(&root->fs_info->subvol_sem);
 	if (sa->cmd != BTRFS_QUOTA_CTL_RESCAN) {
 		trans = btrfs_start_transaction(root, 2);
@@ -3732,6 +3734,7 @@ static long btrfs_ioctl_quota_ctl(struct file *file, void __user *arg)
 out:
 	kfree(sa);
 	up_read(&root->fs_info->subvol_sem);
+	mutex_unlock(&root->fs_info->quota_lock);
 drop_write:
 	mnt_drop_write_file(file);
 	return ret;
@@ -3758,6 +3761,7 @@ static long btrfs_ioctl_qgroup_assign(struct file *file, void __user *arg)
 		goto drop_write;
 	}
 
+	mutex_lock(&root->fs_info->quota_lock);
 	trans = btrfs_join_transaction(root);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
@@ -3779,6 +3783,7 @@ static long btrfs_ioctl_qgroup_assign(struct file *file, void __user *arg)
 
 out:
 	kfree(sa);
+	mutex_unlock(&root->fs_info->quota_lock);
 drop_write:
 	mnt_drop_write_file(file);
 	return ret;
@@ -3809,11 +3814,11 @@ static long btrfs_ioctl_qgroup_create(struct file *file, void __user *arg)
 		ret = -EINVAL;
 		goto out;
 	}
-
+	mutex_lock(&root->fs_info->quota_lock);
 	trans = btrfs_join_transaction(root);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
-		goto out;
+		goto out_unlock;
 	}
 
 	/* FIXME: check if the IDs really exist */
@@ -3828,6 +3833,8 @@ static long btrfs_ioctl_qgroup_create(struct file *file, void __user *arg)
 	if (err && !ret)
 		ret = err;
 
+out_unlock:
+	mutex_unlock(&root->fs_info->quota_lock);
 out:
 	kfree(sa);
 drop_write:
@@ -3856,7 +3863,7 @@ static long btrfs_ioctl_qgroup_limit(struct file *file, void __user *arg)
 		ret = PTR_ERR(sa);
 		goto drop_write;
 	}
-
+	mutex_lock(&root->fs_info->quota_lock);
 	trans = btrfs_join_transaction(root);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
@@ -3878,6 +3885,7 @@ static long btrfs_ioctl_qgroup_limit(struct file *file, void __user *arg)
 
 out:
 	kfree(sa);
+	mutex_unlock(&root->fs_info->quota_lock);
 drop_write:
 	mnt_drop_write_file(file);
 	return ret;
