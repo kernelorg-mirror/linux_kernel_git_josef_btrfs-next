@@ -2376,6 +2376,9 @@ int open_ctree(struct super_block *sb,
 	if (features & BTRFS_FEATURE_INCOMPAT_SKINNY_METADATA)
 		printk(KERN_ERR "btrfs: has skinny extents\n");
 
+	if (features & BTRFS_FEATURE_INCOMPAT_APRIL_FOOLS)
+		printk(KERN_ERR "btrfs: GOTCHA!\n");
+
 	/*
 	 * flag our filesystem as having big metadata blocks if
 	 * they are bigger than the page size
