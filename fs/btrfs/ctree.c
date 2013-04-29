@@ -4317,7 +4317,7 @@ int btrfs_duplicate_item(struct btrfs_trans_handle *trans,
 			       item_size, item_size +
 			       sizeof(struct btrfs_item), 1);
 	leaf = path->nodes[0];
-	memcpy_extent_buffer(leaf,
+	memmove_extent_buffer(leaf,
 			     btrfs_item_ptr_offset(leaf, path->slots[0]),
 			     btrfs_item_ptr_offset(leaf, path->slots[0] - 1),
 			     item_size);

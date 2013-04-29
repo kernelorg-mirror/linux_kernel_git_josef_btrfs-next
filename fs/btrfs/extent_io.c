@@ -4909,89 +4909,9 @@ static void move_pages(struct page *dst_page, struct page *src_page,
 		       unsigned long len)
 {
 	char *dst_kaddr = page_address(dst_page);
-	if (dst_page == src_page) {
-		memmove(dst_kaddr + dst_off, dst_kaddr + src_off, len);
-	} else {
-		char *src_kaddr = page_address(src_page);
-		char *p = dst_kaddr + dst_off + len;
-		char *s = src_kaddr + src_off + len;
+	char *src_kaddr = page_address(src_page);
 
-		while (len--)
-			*--p = *--s;
-	}
-}
-
-static inline bool areas_overlap(unsigned long src, unsigned long dst, unsigned long len)
-{
-	unsigned long distance = (src > dst) ? src - dst : dst - src;
-	return distance < len;
-}
-
-static void copy_pages(struct page *dst_page, struct page *src_page,
-		       unsigned long dst_off, unsigned long src_off,
-		       unsigned long len)
-{
-	char *dst_kaddr = page_address(dst_page);
-	char *src_kaddr;
-	int must_memmove = 0;
-
-	if (dst_page != src_page) {
-		src_kaddr = page_address(src_page);
-	} else {
-		src_kaddr = dst_kaddr;
-		if (areas_overlap(src_off, dst_off, len))
-			must_memmove = 1;
-	}
-
-	if (must_memmove)
-		memmove(dst_kaddr + dst_off, src_kaddr + src_off, len);
-	else
-		memcpy(dst_kaddr + dst_off, src_kaddr + src_off, len);
-}
-
-void memcpy_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
-			   unsigned long src_offset, unsigned long len)
-{
-	size_t cur;
-	size_t dst_off_in_page;
-	size_t src_off_in_page;
-	size_t start_offset = dst->start & ((u64)PAGE_CACHE_SIZE - 1);
-	unsigned long dst_i;
-	unsigned long src_i;
-
-	if (src_offset + len > dst->len) {
-		printk(KERN_ERR "btrfs memmove bogus src_offset %lu move "
-		       "len %lu dst len %lu\n", src_offset, len, dst->len);
-		BUG_ON(1);
-	}
-	if (dst_offset + len > dst->len) {
-		printk(KERN_ERR "btrfs memmove bogus dst_offset %lu move "
-		       "len %lu dst len %lu\n", dst_offset, len, dst->len);
-		BUG_ON(1);
-	}
-
-	while (len > 0) {
-		dst_off_in_page = (start_offset + dst_offset) &
-			((unsigned long)PAGE_CACHE_SIZE - 1);
-		src_off_in_page = (start_offset + src_offset) &
-			((unsigned long)PAGE_CACHE_SIZE - 1);
-
-		dst_i = (start_offset + dst_offset) >> PAGE_CACHE_SHIFT;
-		src_i = (start_offset + src_offset) >> PAGE_CACHE_SHIFT;
-
-		cur = min(len, (unsigned long)(PAGE_CACHE_SIZE -
-					       src_off_in_page));
-		cur = min_t(unsigned long, cur,
-			(unsigned long)(PAGE_CACHE_SIZE - dst_off_in_page));
-
-		copy_pages(extent_buffer_page(dst, dst_i),
-			   extent_buffer_page(dst, src_i),
-			   dst_off_in_page, src_off_in_page, cur);
-
-		src_offset += cur;
-		dst_offset += cur;
-		len -= cur;
-	}
+	memmove(dst_kaddr + dst_off, src_kaddr + src_off, len);
 }
 
 void memmove_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
@@ -5015,10 +4935,6 @@ void memmove_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
 		printk(KERN_ERR "btrfs memmove bogus dst_offset %lu move "
 		       "len %lu len %lu\n", dst_offset, len, dst->len);
 		BUG_ON(1);
-	}
-	if (dst_offset < src_offset) {
-		memcpy_extent_buffer(dst, dst_offset, src_offset, len);
-		return;
 	}
 	while (len > 0) {
 		dst_i = (start_offset + dst_end) >> PAGE_CACHE_SHIFT;
