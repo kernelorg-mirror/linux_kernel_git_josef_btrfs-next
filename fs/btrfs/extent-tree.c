@@ -680,7 +680,6 @@ struct btrfs_block_group_cache *btrfs_lookup_block_group(
  * @root_objectid: the root objectid that we are modifying for this extent.
  * @bytenr: the byte we are modifying the reference for
  * @num_bytes: the number of bytes we are locking.
- * @for_cow: if this operation is for cow then we don't need to lock
  * @block_group: we will store the block group we looked up so that the unlock
  * doesn't have to do another search.
  * @cached_state: this is for caching our location so when we unlock we don't
@@ -689,14 +688,14 @@ struct btrfs_block_group_cache *btrfs_lookup_block_group(
  * This can return -ENOMEM if we cannot allocate our extent state.
  */
 int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
-		   u64 bytenr,u64 num_bytes, int for_cow,
+		   u64 bytenr,u64 num_bytes,
 		   struct btrfs_block_group_cache **block_group,
 		   struct extent_state **cached_state)
 {
 	struct btrfs_block_group_cache *cache;
 	int ret;
 
-	if (!fs_info->quota_enabled || !need_ref_seq(for_cow, root_objectid))
+	if (!fs_info->quota_enabled || !is_fstree(root_objectid))
 		return 0;
 
 	cache = btrfs_lookup_block_group(fs_info, bytenr);
@@ -721,7 +720,6 @@ int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
  * @root_objectid: the root objectid that we are modifying for this extent.
  * @bytenr: the byte we are modifying the reference for
  * @num_bytes: the number of bytes we are locking.
- * @for_cow: if this ref update is for cow we didn't take the lock.
  * @block_group: the block_group we got from lock_ref.
  * @cached_state: this is for caching our location so when we unlock we don't
  * have to do a tree search.
@@ -729,13 +727,13 @@ int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
  * This can return -ENOMEM if we fail to allocate an extent state.
  */
 int btrfs_unlock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
-		     u64 bytenr, u64 num_bytes, int for_cow,
+		     u64 bytenr, u64 num_bytes,
 		     struct btrfs_block_group_cache *block_group,
 		     struct extent_state **cached_state)
 {
 	int ret;
 
-	if (!fs_info->quota_enabled || !need_ref_seq(for_cow, root_objectid))
+	if (!fs_info->quota_enabled || !is_fstree(root_objectid))
 		return 0;
 
 	ret = unlock_extent_cached(&block_group->ref_lock, bytenr,
@@ -1344,7 +1342,7 @@ fail:
 static noinline int remove_extent_data_ref(struct btrfs_trans_handle *trans,
 					   struct btrfs_root *root,
 					   struct btrfs_path *path,
-					   int refs_to_drop)
+					   int refs_to_drop, int *last_ref)
 {
 	struct btrfs_key key;
 	struct btrfs_extent_data_ref *ref1 = NULL;
@@ -1380,6 +1378,7 @@ static noinline int remove_extent_data_ref(struct btrfs_trans_handle *trans,
 
 	if (num_refs == 0) {
 		ret = btrfs_del_item(trans, root, path);
+		*last_ref = 1;
 	} else {
 		if (key.type == BTRFS_EXTENT_DATA_REF_KEY)
 			btrfs_set_extent_data_ref_count(leaf, ref1, num_refs);
@@ -1532,6 +1531,201 @@ static int find_next_key(struct btrfs_path *path, int level,
 		return 0;
 	}
 	return 1;
+}
+
+/*
+ * Look at an inline extent backref to see if one of the references matches the
+ * root we are looking for.
+ */
+static int find_root_in_inline_backref(struct btrfs_trans_handle *trans,
+				       struct btrfs_path *path, u64 ref_root,
+				       int slot, int add_shared,
+				       int *refs_to_add, int *shared_refs)
+{
+	struct extent_buffer *leaf = path->nodes[0];
+	struct btrfs_extent_item *ei;
+	struct btrfs_extent_data_ref *dref;
+	struct btrfs_extent_inline_ref *iref;
+	struct btrfs_key key;
+	u64 item_size;
+	u64 flags;
+	u64 root;
+	u64 refs;
+	u64 parent;
+	unsigned long ptr;
+	unsigned long end;
+	int type;
+	int ret = 0;
+	bool found = false;
+
+	item_size = btrfs_item_size_nr(leaf, slot);
+#ifdef BTRFS_COMPAT_EXTENT_TREE_V0
+	/* We really shouldn't have V0 references with an fs that has quotas. */
+	if (item_size < sizeof(*ei))
+		return -EINVAL;
+#endif
+	btrfs_item_key_to_cpu(leaf, &key, slot);
+	ei = btrfs_item_ptr(leaf, slot, struct btrfs_extent_item);
+	flags = btrfs_extent_flags(leaf, ei);
+
+	ptr = (unsigned long)(ei + 1);
+	end = (unsigned long)ei + item_size;
+
+	if (flags & BTRFS_EXTENT_FLAG_TREE_BLOCK &&
+	    key.type == BTRFS_EXTENT_ITEM_KEY) {
+		ptr += sizeof(struct btrfs_tree_block_info);
+		ASSERT(ptr <= end);
+	}
+
+	while (!found && ptr < end) {
+		iref = (struct btrfs_extent_inline_ref *)ptr;
+		type = btrfs_extent_inline_ref_type(leaf, iref);
+
+		switch (type) {
+		case BTRFS_EXTENT_DATA_REF_KEY:
+			dref = (struct btrfs_extent_data_ref *)(&iref->offset);
+			root = btrfs_extent_data_ref_root(leaf, dref);
+			if (root != ref_root)
+				break;
+			refs = btrfs_extent_data_ref_count(leaf, dref);
+			if (refs > (u64)(*refs_to_add))
+				found = true;
+			else
+				*refs_to_add -= (int)refs;
+			break;
+		case BTRFS_TREE_BLOCK_REF_KEY:
+			if (btrfs_extent_inline_ref_offset(leaf, iref) !=
+			    ref_root)
+				break;
+			if (*refs_to_add == 0)
+				found = true;
+			(*refs_to_add)--;
+			break;
+		case BTRFS_SHARED_DATA_REF_KEY:
+		case BTRFS_SHARED_BLOCK_REF_KEY:
+			(*shared_refs)++;
+			if (!add_shared)
+				break;
+			parent = btrfs_extent_inline_ref_offset(leaf, iref);
+			ret = btrfs_qgroup_add_shared_ref(trans, ref_root,
+							  parent);
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+		if (ret || found)
+			break;
+		ptr += btrfs_extent_inline_ref_size(type);
+	}
+	if (found)
+		ret = 1;
+	return ret;
+}
+
+/*
+ * This will look for the given root ref from path.  This assumes that path is
+ * pointing at the extent item for the extent you want to check.
+ */
+static int root_has_ref(struct btrfs_trans_handle *trans,
+			struct btrfs_root *root, struct btrfs_path *path,
+			u64 bytenr, u64 ref_root, int can_search_forward,
+			int add_shared, int refs_to_add, int *shared_refs)
+{
+	struct extent_buffer *leaf = path->nodes[0];
+	struct btrfs_extent_data_ref *ref;
+	struct btrfs_key key;
+	u64 refs;
+	u64 found_root;
+	int slot = path->slots[0];
+	int ret = 0;
+	bool found = false;
+
+	root = root->fs_info->extent_root;
+
+	/* Return 1 so we don't do any of the accounting */
+	if (!root->fs_info->quota_enabled || !is_fstree(ref_root))
+		return 1;
+
+	while (!found) {
+		btrfs_item_key_to_cpu(leaf, &key, slot);
+		if (key.objectid != bytenr)
+			break;
+		if (key.type == BTRFS_BLOCK_GROUP_ITEM_KEY)
+			goto next;
+		switch (key.type) {
+		case BTRFS_EXTENT_ITEM_KEY:
+		case BTRFS_METADATA_ITEM_KEY:
+			ret = find_root_in_inline_backref(trans, path,
+							  ref_root, slot,
+							  add_shared,
+							  &refs_to_add,
+							  shared_refs);
+			if (ret > 0)
+				found = true;
+			break;
+		case BTRFS_EXTENT_DATA_REF_KEY:
+			ref = btrfs_item_ptr(leaf, slot,
+					     struct btrfs_extent_data_ref);
+			found_root = btrfs_extent_data_ref_root(leaf, ref);
+			if (found_root != ref_root)
+				break;
+			refs = btrfs_extent_data_ref_count(leaf, ref);
+			if (refs > (u64)refs_to_add)
+				found = true;
+			else
+				refs_to_add -= (int)refs;
+			break;
+		case BTRFS_TREE_BLOCK_REF_KEY:
+			if (key.offset != ref_root)
+				break;
+			if (!refs_to_add)
+				found = true;
+			refs_to_add--;
+			break;
+		case BTRFS_SHARED_DATA_REF_KEY:
+		case BTRFS_SHARED_BLOCK_REF_KEY:
+			(*shared_refs)++;
+			if (!add_shared)
+				break;
+			/*
+			 * Need to make an allocation so if we're leave spinning
+			 * we need to set the path to blocking.
+			 */
+			if (path->leave_spinning)
+				btrfs_set_path_blocking(path);
+			ret = btrfs_qgroup_add_shared_ref(trans, ref_root,
+							  key.offset);
+			if (path->leave_spinning)
+				btrfs_clear_path_blocking(path, NULL, 0);
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+		if (ret || found)
+			break;
+next:
+		slot++;
+		if (slot >= btrfs_header_nritems(leaf)) {
+			if (!can_search_forward) {
+				ret = -EAGAIN;
+				break;
+			}
+			ret = btrfs_next_leaf(root, path);
+			if (ret < 0)
+				break;
+			if (ret > 0) {
+				ret = 0;
+				break;
+			}
+			leaf = path->nodes[0];
+			slot = 0;
+		}
+	}
+	if (found)
+		ret = 1;
+	return ret;
 }
 
 /*
@@ -1836,7 +2030,8 @@ void update_inline_extent_backref(struct btrfs_root *root,
 				  struct btrfs_path *path,
 				  struct btrfs_extent_inline_ref *iref,
 				  int refs_to_mod,
-				  struct btrfs_delayed_extent_op *extent_op)
+				  struct btrfs_delayed_extent_op *extent_op,
+				  int *last_ref)
 {
 	struct extent_buffer *leaf;
 	struct btrfs_extent_item *ei;
@@ -1880,6 +2075,7 @@ void update_inline_extent_backref(struct btrfs_root *root,
 		else
 			btrfs_set_shared_data_ref_count(leaf, sref, refs);
 	} else {
+		*last_ref = 1;
 		size =  btrfs_extent_inline_ref_size(type);
 		item_size = btrfs_item_size_nr(leaf, path->slots[0]);
 		ptr = (unsigned long)iref;
@@ -1900,9 +2096,11 @@ int insert_inline_extent_backref(struct btrfs_trans_handle *trans,
 				 u64 bytenr, u64 num_bytes, u64 parent,
 				 u64 root_objectid, u64 owner,
 				 u64 offset, int refs_to_add,
-				 struct btrfs_delayed_extent_op *extent_op)
+				 struct btrfs_delayed_extent_op *extent_op,
+				 int *new_ref)
 {
 	struct btrfs_extent_inline_ref *iref;
+	int shared_refs = 0;
 	int ret;
 
 	ret = lookup_inline_extent_backref(trans, root, path, &iref,
@@ -1911,8 +2109,33 @@ int insert_inline_extent_backref(struct btrfs_trans_handle *trans,
 	if (ret == 0) {
 		BUG_ON(owner < BTRFS_FIRST_FREE_OBJECTID);
 		update_inline_extent_backref(root, path, iref,
-					     refs_to_add, extent_op);
+					     refs_to_add, extent_op, NULL);
 	} else if (ret == -ENOENT) {
+		/*
+		 * We want to quickly see if we are adding a ref for a root that
+		 * already holds a ref on this backref, so we'll search forward
+		 * as much as we can to see if that's the case.  This is to keep
+		 * us from searching again if we don't have to, otherwise we'll
+		 * have to do this whole search over again to make sure we
+		 * really don't have another guy.  Keep in mind this does
+		 * nothing if quotas aren't enabled.
+		 */
+		ret = root_has_ref(trans, root, path, bytenr, root_objectid, 0,
+				   0, 0, &shared_refs);
+		if (ret <= 0) {
+			/*
+			 * If we got an error back from root_has_ref or we
+			 * tripped over a shared ref then we need to make sure
+			 * the caller re-calls root_has_ref to either verify
+			 * this root is not already pointing at this bytenr or
+			 * in the case of shared_refs we add the shared refs we
+			 * find.
+			 */
+			if (shared_refs || ret < 0)
+				*new_ref = 2;
+			else
+				*new_ref = 1;
+		}
 		setup_inline_extent_backref(root, path, iref, parent,
 					    root_objectid, owner, offset,
 					    refs_to_add, extent_op);
@@ -1944,17 +2167,19 @@ static int remove_extent_backref(struct btrfs_trans_handle *trans,
 				 struct btrfs_root *root,
 				 struct btrfs_path *path,
 				 struct btrfs_extent_inline_ref *iref,
-				 int refs_to_drop, int is_data)
+				 int refs_to_drop, int is_data, int *last_ref)
 {
 	int ret = 0;
 
 	BUG_ON(!is_data && refs_to_drop != 1);
 	if (iref) {
 		update_inline_extent_backref(root, path, iref,
-					     -refs_to_drop, NULL);
+					     -refs_to_drop, NULL, last_ref);
 	} else if (is_data) {
-		ret = remove_extent_data_ref(trans, root, path, refs_to_drop);
+		ret = remove_extent_data_ref(trans, root, path, refs_to_drop,
+					     last_ref);
 	} else {
+		*last_ref = 1;
 		ret = btrfs_del_item(trans, root, path);
 	}
 	return ret;
@@ -2047,11 +2272,16 @@ static int __btrfs_inc_extent_ref(struct btrfs_trans_handle *trans,
 				  u64 owner, u64 offset, int refs_to_add,
 				  struct btrfs_delayed_extent_op *extent_op)
 {
+	struct btrfs_fs_info *fs_info = root->fs_info;
 	struct btrfs_path *path;
 	struct extent_buffer *leaf;
 	struct btrfs_extent_item *item;
+	struct btrfs_key key;
 	u64 refs;
+	int new_ref = 0;
+	int shared_refs = 0;
 	int ret;
+	enum btrfs_qgroup_operation_type type = BTRFS_QGROUP_OPER_ADD_EXCL;
 
 	path = btrfs_alloc_path();
 	if (!path)
@@ -2060,16 +2290,75 @@ static int __btrfs_inc_extent_ref(struct btrfs_trans_handle *trans,
 	path->reada = 1;
 	path->leave_spinning = 1;
 	/* this will setup the path even if it fails to insert the back ref */
-	ret = insert_inline_extent_backref(trans, root->fs_info->extent_root,
-					   path, bytenr, num_bytes, parent,
+	ret = insert_inline_extent_backref(trans, fs_info->extent_root, path,
+					   bytenr, num_bytes, parent,
 					   root_objectid, owner, offset,
-					   refs_to_add, extent_op);
-	if (ret != -EAGAIN)
+					   refs_to_add, extent_op, &new_ref);
+	if ((ret < 0 && ret != -EAGAIN) || (!ret && !new_ref))
 		goto out;
+	/*
+	 * Ok we were able to insert an inline extent and it appears to be a new
+	 * reference, deal with the qgroup accounting.
+	 */
+	if (!ret && new_ref) {
+		int shared_refs = 0;
 
+		ASSERT(root->fs_info->quota_enabled);
+		leaf = path->nodes[0];
+		btrfs_item_key_to_cpu(leaf, &key, path->slots[0]);
+		item = btrfs_item_ptr(leaf, path->slots[0],
+				      struct btrfs_extent_item);
+		if (btrfs_extent_refs(leaf, item) > (u64)refs_to_add)
+			type = BTRFS_QGROUP_OPER_ADD_SHARED;
+		btrfs_release_path(path);
+
+		/* Parent doesn't matter for add operations */
+		ret = btrfs_qgroup_record_ref(trans, fs_info, root_objectid,
+					      bytenr, num_bytes, 0, type);
+		if (ret < 0)
+			goto out;
+
+		/* There are no shared refs, so we can just exit now. */
+		if (new_ref == 1)
+			goto out;
+		path->leave_spinning = 0;
+		ret = btrfs_search_slot(NULL, root->fs_info->extent_root, &key,
+					path, 0, 0);
+		if (ret < 0)
+			goto out;
+		ASSERT(ret == 0);
+
+		/*
+		 * Have to pass the refs we added since we will have added this
+		 * backref already so we needto make sure there wasn't any other
+		 * refs for this root.
+		 */
+		ret = root_has_ref(trans, root, path, bytenr, root_objectid,
+				   1, 1, refs_to_add, &shared_refs);
+		if (ret < 0)
+			goto out;
+		/*
+		 * Upon a second search we found our root referencing this
+		 * bytenr already.
+		 */
+		if (ret > 0)
+			btrfs_remove_last_qgroup_operation(trans, fs_info,
+							   root_objectid);
+		ret = 0;
+		goto out;
+	}
+
+	/*
+	 * Ok we had -EAGAIN which means we didn't have space to insert and
+	 * inline extent ref, so just update the reference count and add a
+	 * normal backref.
+	 */
 	leaf = path->nodes[0];
+	btrfs_item_key_to_cpu(leaf, &key, path->slots[0]);
 	item = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_extent_item);
 	refs = btrfs_extent_refs(leaf, item);
+	if (refs)
+		type = BTRFS_QGROUP_OPER_ADD_SHARED;
 	btrfs_set_extent_refs(leaf, item, refs + refs_to_add);
 	if (extent_op)
 		__run_delayed_extent_op(extent_op, leaf, item);
@@ -2077,9 +2366,37 @@ static int __btrfs_inc_extent_ref(struct btrfs_trans_handle *trans,
 	btrfs_mark_buffer_dirty(leaf);
 	btrfs_release_path(path);
 
+	/*
+	 * Do qgroup accounting.  We go ahead and add the ref first in case
+	 * there are no matches, since in the other case we'd have to run
+	 * root_has_ref twice, once without add_shared set and then again with
+	 * add_shared set if there were any shared refs.
+	 */
+	if (is_fstree(root_objectid) && fs_info->quota_enabled) {
+		ret = btrfs_qgroup_record_ref(trans, fs_info, root_objectid,
+					      bytenr, num_bytes, 0, type);
+		if (ret)
+			goto out;
+		path->leave_spinning = 0;
+		ret = btrfs_search_slot(NULL, root->fs_info->extent_root, &key,
+					path, 0, 0);
+		if (ret < 0)
+			goto out;
+		ASSERT(ret == 0);
+
+		ret = root_has_ref(trans, root, path, bytenr, root_objectid,
+				   1, 1, 0, &shared_refs);
+		if (ret < 0)
+			goto out;
+		if (ret > 0)
+			btrfs_remove_last_qgroup_operation(trans, fs_info,
+							   root_objectid);
+		btrfs_release_path(path);
+		ret = 0;
+	}
+
 	path->reada = 1;
 	path->leave_spinning = 1;
-
 	/* now insert the actual backref */
 	ret = insert_extent_backref(trans, root->fs_info->extent_root,
 				    path, bytenr, parent, root_objectid,
@@ -2116,12 +2433,10 @@ static int run_delayed_data_ref(struct btrfs_trans_handle *trans,
 
 	if (node->type == BTRFS_SHARED_DATA_REF_KEY)
 		parent = ref->parent;
-	else
-		ref_root = ref->root;
+	ref_root = ref->root;
 
 	ret = btrfs_lock_ref(root->fs_info, ref->root, node->bytenr,
-			     node->num_bytes, node->for_cow, &block_group,
-			     &cached_state);
+			     node->num_bytes, &block_group, &cached_state);
 	if (ret)
 		return ret;
 	if (node->action == BTRFS_ADD_DELAYED_REF && insert_reserved) {
@@ -2147,8 +2462,7 @@ static int run_delayed_data_ref(struct btrfs_trans_handle *trans,
 		BUG();
 	}
 	err = btrfs_unlock_ref(root->fs_info, ref->root, node->bytenr,
-			       node->num_bytes, node->for_cow, block_group,
-			       &cached_state);
+			       node->num_bytes, block_group, &cached_state);
 	return ret ? ret : err;
 }
 
@@ -2285,8 +2599,7 @@ static int run_delayed_tree_ref(struct btrfs_trans_handle *trans,
 
 	if (node->type == BTRFS_SHARED_BLOCK_REF_KEY)
 		parent = ref->parent;
-	else
-		ref_root = ref->root;
+	ref_root = ref->root;
 
 	ins.objectid = node->bytenr;
 	if (skinny_metadata) {
@@ -2298,8 +2611,7 @@ static int run_delayed_tree_ref(struct btrfs_trans_handle *trans,
 	}
 
 	ret = btrfs_lock_ref(root->fs_info, ref->root, node->bytenr,
-			     node->num_bytes, node->for_cow, &block_group,
-			     &cached_state);
+			     node->num_bytes, &block_group, &cached_state);
 	if (ret)
 		return ret;
 	BUG_ON(node->ref_mod != 1);
@@ -2322,8 +2634,7 @@ static int run_delayed_tree_ref(struct btrfs_trans_handle *trans,
 		BUG();
 	}
 	err = btrfs_unlock_ref(root->fs_info, ref->root, node->bytenr,
-			       node->num_bytes, node->for_cow, block_group,
-			       &cached_state);
+			       node->num_bytes, block_group, &cached_state);
 	return ret ? ret : err;
 }
 
@@ -2666,42 +2977,6 @@ static u64 find_middle(struct rb_root *root)
 }
 #endif
 
-int btrfs_delayed_refs_qgroup_accounting(struct btrfs_trans_handle *trans,
-					 struct btrfs_fs_info *fs_info)
-{
-	struct qgroup_update *qgroup_update;
-	int ret = 0;
-
-	if (list_empty(&trans->qgroup_ref_list) !=
-	    !trans->delayed_ref_elem.seq) {
-		/* list without seq or seq without list */
-		btrfs_err(fs_info,
-			"qgroup accounting update error, list is%s empty, seq is %#x.%x",
-			list_empty(&trans->qgroup_ref_list) ? "" : " not",
-			(u32)(trans->delayed_ref_elem.seq >> 32),
-			(u32)trans->delayed_ref_elem.seq);
-		BUG();
-	}
-
-	if (!trans->delayed_ref_elem.seq)
-		return 0;
-
-	while (!list_empty(&trans->qgroup_ref_list)) {
-		qgroup_update = list_first_entry(&trans->qgroup_ref_list,
-						 struct qgroup_update, list);
-		list_del(&qgroup_update->list);
-		if (!ret)
-			ret = btrfs_qgroup_account_ref(
-					trans, fs_info, qgroup_update->node,
-					qgroup_update->extent_op);
-		kfree(qgroup_update);
-	}
-
-	btrfs_put_tree_mod_seq(fs_info, &trans->delayed_ref_elem);
-
-	return ret;
-}
-
 static inline u64 heads_to_leaves(struct btrfs_root *root, u64 heads)
 {
 	u64 num_bytes;
@@ -2790,8 +3065,6 @@ int btrfs_run_delayed_refs(struct btrfs_trans_handle *trans,
 	if (root == root->fs_info->extent_root)
 		root = root->fs_info->tree_root;
 
-	btrfs_delayed_refs_qgroup_accounting(trans, root->fs_info);
-
 	delayed_refs = &trans->transaction->delayed_refs;
 	if (count == 0) {
 		count = atomic_read(&delayed_refs->num_entries) * 2;
@@ -2850,6 +3123,9 @@ again:
 		goto again;
 	}
 out:
+	ret = btrfs_delayed_qgroup_accounting(trans, root->fs_info);
+	if (ret)
+		return ret;
 	assert_qgroups_uptodate(trans);
 	return 0;
 }
@@ -5734,6 +6010,8 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 	int num_to_del = 1;
 	u32 item_size;
 	u64 refs;
+	int last_ref = 0;
+	enum btrfs_qgroup_operation_type type = BTRFS_QGROUP_OPER_SUB_EXCL;
 	bool skinny_metadata = btrfs_fs_incompat(root->fs_info,
 						 SKINNY_METADATA);
 
@@ -5784,7 +6062,7 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 			BUG_ON(iref);
 			ret = remove_extent_backref(trans, extent_root, path,
 						    NULL, refs_to_drop,
-						    is_data);
+						    is_data, &last_ref);
 			if (ret) {
 				btrfs_abort_transaction(trans, extent_root, ret);
 				goto out;
@@ -5908,6 +6186,7 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 	refs -= refs_to_drop;
 
 	if (refs > 0) {
+		type = BTRFS_QGROUP_OPER_SUB_SHARED;
 		if (extent_op)
 			__run_delayed_extent_op(extent_op, leaf, ei);
 		/*
@@ -5923,7 +6202,7 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 		if (found_extent) {
 			ret = remove_extent_backref(trans, extent_root, path,
 						    iref, refs_to_drop,
-						    is_data);
+						    is_data, &last_ref);
 			if (ret) {
 				btrfs_abort_transaction(trans, extent_root, ret);
 				goto out;
@@ -5944,6 +6223,7 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 			}
 		}
 
+		last_ref = 1;
 		ret = btrfs_del_items(trans, extent_root, path, path->slots[0],
 				      num_to_del);
 		if (ret) {
@@ -5965,6 +6245,35 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 			btrfs_abort_transaction(trans, extent_root, ret);
 			goto out;
 		}
+	}
+	btrfs_release_path(path);
+
+	/* Deal with the quota accounting */
+	if (!ret && last_ref && info->quota_enabled &&
+	    is_fstree(root_objectid)) {
+		int shared_refs = 0;
+
+		ret = btrfs_qgroup_record_ref(trans, info, root_objectid,
+					      bytenr, num_bytes, parent, type);
+		/*
+		 * If we deleted the extent item then we can just bail without
+		 * having to look for more extents.
+		 */
+		if (ret < 0 || type == BTRFS_QGROUP_OPER_SUB_EXCL)
+			goto out;
+		path->leave_spinning = 0;
+		ret = btrfs_search_slot(NULL, extent_root, &key, path, 0, 0);
+		if (ret < 0)
+			goto out;
+		ASSERT(ret == 0);
+		ret = root_has_ref(trans, root, path, bytenr, root_objectid, 1,
+				   0, 0, &shared_refs);
+		if (ret < 0)
+			goto out;
+		if (ret > 0)
+			btrfs_remove_last_qgroup_operation(trans, info,
+							   root_objectid);
+		ret = 0;
 	}
 out:
 	btrfs_free_path(path);
@@ -6827,6 +7136,13 @@ static int alloc_reserved_file_extent(struct btrfs_trans_handle *trans,
 	btrfs_mark_buffer_dirty(path->nodes[0]);
 	btrfs_free_path(path);
 
+	/* Always set parent to 0 here since its exclusive anyway. */
+	ret = btrfs_qgroup_record_ref(trans, fs_info, root_objectid,
+				      ins->objectid, ins->offset, 0,
+				      BTRFS_QGROUP_OPER_ADD_EXCL);
+	if (ret)
+		return ret;
+
 	ret = update_block_group(root, ins->objectid, ins->offset, 1);
 	if (ret) { /* -ENOENT, logic error */
 		btrfs_err(fs_info, "update block group failed for %llu %llu",
@@ -6851,6 +7167,7 @@ static int alloc_reserved_tree_block(struct btrfs_trans_handle *trans,
 	struct btrfs_path *path;
 	struct extent_buffer *leaf;
 	u32 size = sizeof(*extent_item) + sizeof(*iref);
+	u64 num_bytes = ins->offset;
 	bool skinny_metadata = btrfs_fs_incompat(root->fs_info,
 						 SKINNY_METADATA);
 
@@ -6884,6 +7201,7 @@ static int alloc_reserved_tree_block(struct btrfs_trans_handle *trans,
 
 	if (skinny_metadata) {
 		iref = (struct btrfs_extent_inline_ref *)(extent_item + 1);
+		num_bytes = root->leafsize;
 	} else {
 		block_info = (struct btrfs_tree_block_info *)(extent_item + 1);
 		btrfs_set_tree_block_key(leaf, block_info, key);
@@ -6904,6 +7222,12 @@ static int alloc_reserved_tree_block(struct btrfs_trans_handle *trans,
 
 	btrfs_mark_buffer_dirty(leaf);
 	btrfs_free_path(path);
+
+	ret = btrfs_qgroup_record_ref(trans, fs_info, root_objectid,
+				      ins->objectid, num_bytes, 0,
+				      BTRFS_QGROUP_OPER_ADD_EXCL);
+	if (ret)
+		return ret;
 
 	ret = update_block_group(root, ins->objectid, root->leafsize, 1);
 	if (ret) { /* -ENOENT, logic error */

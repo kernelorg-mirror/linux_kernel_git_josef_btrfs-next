@@ -1291,6 +1291,32 @@ enum btrfs_orphan_cleanup_state {
 	ORPHAN_CLEANUP_DONE	= 2,
 };
 
+/*
+ * A description of the operations, all of these operations only happen when we
+ * are adding the 1st reference for that subvolume in the case of adding space
+ * or on the last reference delete in the case of subtraction.
+ *
+ * BTRFS_QGROUP_OPER_ADD_EXCL: adding bytes where this subvolume is the only
+ * one pointing at the bytes we are adding.  This is called on the first
+ * allocation.
+ *
+ * BTRFS_QGROUP_OPER_ADD_SHARED: adding bytes where this bytenr is going to be
+ * shared between subvols.  This is called on the creation of a ref that already
+ * has refs from a different subvolume, so basically reflink.
+ *
+ * BTRFS_QGROUP_OPER_SUB_EXCL: removing bytes where this subvolume is the only
+ * one referencing the range.
+ *
+ * BTRFS_QGROUP_OPER_SUB_SHARED: removing bytes where this subvolume shares with
+ * refs with other subvolumes.
+ */
+enum btrfs_qgroup_operation_type {
+	BTRFS_QGROUP_OPER_ADD_EXCL,
+	BTRFS_QGROUP_OPER_ADD_SHARED,
+	BTRFS_QGROUP_OPER_SUB_EXCL,
+	BTRFS_QGROUP_OPER_SUB_SHARED,
+};
+
 /* used by the raid56 code to lock stripes for read/modify/write */
 struct btrfs_stripe_hash {
 	struct list_head hash_list;
@@ -1631,7 +1657,10 @@ struct btrfs_fs_info {
 
 	/* holds configuration and tracking. Protected by qgroup_lock */
 	struct rb_root qgroup_tree;
+	struct rb_root qgroup_op_tree;
 	spinlock_t qgroup_lock;
+	spinlock_t qgroup_op_lock;
+	atomic_t qgroup_op_seq;
 
 	/*
 	 * used to avoid frequently calling ulist_alloc()/ulist_free()
@@ -3354,11 +3383,11 @@ int btrfs_delayed_refs_qgroup_accounting(struct btrfs_trans_handle *trans,
 					 struct btrfs_fs_info *fs_info);
 int __get_raid_index(u64 flags);
 int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
-		   u64 bytenr,u64 num_bytes, int for_cow,
+		   u64 bytenr, u64 num_bytes,
 		   struct btrfs_block_group_cache **block_group,
 		   struct extent_state **cached_state);
 int btrfs_unlock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
-		     u64 bytenr, u64 num_bytes, int for_cow,
+		     u64 bytenr, u64 num_bytes,
 		     struct btrfs_block_group_cache *block_group,
 		     struct extent_state **cached_state);
 /* ctree.c */
@@ -4074,12 +4103,16 @@ int btrfs_read_qgroup_config(struct btrfs_fs_info *fs_info);
 void btrfs_free_qgroup_config(struct btrfs_fs_info *fs_info);
 struct btrfs_delayed_extent_op;
 int btrfs_qgroup_record_ref(struct btrfs_trans_handle *trans,
-			    struct btrfs_delayed_ref_node *node,
-			    struct btrfs_delayed_extent_op *extent_op);
-int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
-			     struct btrfs_fs_info *fs_info,
-			     struct btrfs_delayed_ref_node *node,
-			     struct btrfs_delayed_extent_op *extent_op);
+			    struct btrfs_fs_info *fs_info, u64 ref_root,
+			    u64 bytenr, u64 num_bytes, u64 parent,
+			    enum btrfs_qgroup_operation_type type);
+int btrfs_delayed_qgroup_accounting(struct btrfs_trans_handle *trans,
+				    struct btrfs_fs_info *fs_info);
+void btrfs_remove_last_qgroup_operation(struct btrfs_trans_handle *trans,
+					struct btrfs_fs_info *fs_info,
+					u64 ref_root);
+int btrfs_qgroup_add_shared_ref(struct btrfs_trans_handle *trans, u64 ref_root,
+				u64 parent);
 int btrfs_run_qgroups(struct btrfs_trans_handle *trans,
 		      struct btrfs_fs_info *fs_info);
 int btrfs_qgroup_inherit(struct btrfs_trans_handle *trans,
