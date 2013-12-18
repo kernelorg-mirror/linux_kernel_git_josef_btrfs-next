@@ -672,6 +672,79 @@ struct btrfs_block_group_cache *btrfs_lookup_block_group(
 	return cache;
 }
 
+
+/* This is used to lock the modification to an extent ref.  This only does
+ * something if the reference is a fs tree.
+ *
+ * @fs_info: the fs_info for this filesystem.
+ * @root_objectid: the root objectid that we are modifying for this extent.
+ * @bytenr: the byte we are modifying the reference for
+ * @num_bytes: the number of bytes we are locking.
+ * @for_cow: if this operation is for cow then we don't need to lock
+ * @block_group: we will store the block group we looked up so that the unlock
+ * doesn't have to do another search.
+ * @cached_state: this is for caching our location so when we unlock we don't
+ * have to do a tree search.
+ *
+ * This can return -ENOMEM if we cannot allocate our extent state.
+ */
+int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
+		   u64 bytenr,u64 num_bytes, int for_cow,
+		   struct btrfs_block_group_cache **block_group,
+		   struct extent_state **cached_state)
+{
+	struct btrfs_block_group_cache *cache;
+	int ret;
+
+	if (!fs_info->quota_enabled || !need_ref_seq(for_cow, root_objectid))
+		return 0;
+
+	cache = btrfs_lookup_block_group(fs_info, bytenr);
+	ASSERT(cache);
+	ASSERT(cache->key.objectid <= bytenr &&
+	       (cache->key.objectid + cache->key.offset >=
+		bytenr + num_bytes));
+	ret = lock_extent_bits(&cache->ref_lock, bytenr,
+			       bytenr + num_bytes - 1, 0, cached_state);
+	if (!ret)
+		*block_group = cache;
+	else
+		btrfs_put_block_group(cache);
+	return ret;
+}
+
+/*
+ * Unlock the extent ref, this only does something if the reference is for an fs
+ * tree.
+ *
+ * @fs_info: the fs_info for this filesystem.
+ * @root_objectid: the root objectid that we are modifying for this extent.
+ * @bytenr: the byte we are modifying the reference for
+ * @num_bytes: the number of bytes we are locking.
+ * @for_cow: if this ref update is for cow we didn't take the lock.
+ * @block_group: the block_group we got from lock_ref.
+ * @cached_state: this is for caching our location so when we unlock we don't
+ * have to do a tree search.
+ *
+ * This can return -ENOMEM if we fail to allocate an extent state.
+ */
+int btrfs_unlock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
+		     u64 bytenr, u64 num_bytes, int for_cow,
+		     struct btrfs_block_group_cache *block_group,
+		     struct extent_state **cached_state)
+{
+	int ret;
+
+	if (!fs_info->quota_enabled || !need_ref_seq(for_cow, root_objectid))
+		return 0;
+
+	ret = unlock_extent_cached(&block_group->ref_lock, bytenr,
+				   bytenr + num_bytes - 1, cached_state,
+				   GFP_NOFS);
+	btrfs_put_block_group(block_group);
+	return ret;
+}
+
 static struct btrfs_space_info *__find_space_info(struct btrfs_fs_info *info,
 						  u64 flags)
 {
@@ -2026,10 +2099,13 @@ static int run_delayed_data_ref(struct btrfs_trans_handle *trans,
 {
 	int ret = 0;
 	struct btrfs_delayed_data_ref *ref;
+	struct btrfs_block_group_cache *block_group;
+	struct extent_state *cached_state = NULL;
 	struct btrfs_key ins;
 	u64 parent = 0;
 	u64 ref_root = 0;
 	u64 flags = 0;
+	int err;
 
 	ins.objectid = node->bytenr;
 	ins.offset = node->num_bytes;
@@ -2043,6 +2119,11 @@ static int run_delayed_data_ref(struct btrfs_trans_handle *trans,
 	else
 		ref_root = ref->root;
 
+	ret = btrfs_lock_ref(root->fs_info, ref->root, node->bytenr,
+			     node->num_bytes, node->for_cow, &block_group,
+			     &cached_state);
+	if (ret)
+		return ret;
 	if (node->action == BTRFS_ADD_DELAYED_REF && insert_reserved) {
 		if (extent_op)
 			flags |= extent_op->flags_to_set;
@@ -2065,7 +2146,10 @@ static int run_delayed_data_ref(struct btrfs_trans_handle *trans,
 	} else {
 		BUG();
 	}
-	return ret;
+	err = btrfs_unlock_ref(root->fs_info, ref->root, node->bytenr,
+			       node->num_bytes, node->for_cow, block_group,
+			       &cached_state);
+	return ret ? ret : err;
 }
 
 static void __run_delayed_extent_op(struct btrfs_delayed_extent_op *extent_op,
@@ -2187,9 +2271,12 @@ static int run_delayed_tree_ref(struct btrfs_trans_handle *trans,
 {
 	int ret = 0;
 	struct btrfs_delayed_tree_ref *ref;
+	struct btrfs_block_group_cache *block_group;
+	struct extent_state *cached_state = NULL;
 	struct btrfs_key ins;
 	u64 parent = 0;
 	u64 ref_root = 0;
+	int err;
 	bool skinny_metadata = btrfs_fs_incompat(root->fs_info,
 						 SKINNY_METADATA);
 
@@ -2210,6 +2297,11 @@ static int run_delayed_tree_ref(struct btrfs_trans_handle *trans,
 		ins.type = BTRFS_EXTENT_ITEM_KEY;
 	}
 
+	ret = btrfs_lock_ref(root->fs_info, ref->root, node->bytenr,
+			     node->num_bytes, node->for_cow, &block_group,
+			     &cached_state);
+	if (ret)
+		return ret;
 	BUG_ON(node->ref_mod != 1);
 	if (node->action == BTRFS_ADD_DELAYED_REF && insert_reserved) {
 		BUG_ON(!extent_op || !extent_op->update_flags);
@@ -2229,7 +2321,10 @@ static int run_delayed_tree_ref(struct btrfs_trans_handle *trans,
 	} else {
 		BUG();
 	}
-	return ret;
+	err = btrfs_unlock_ref(root->fs_info, ref->root, node->bytenr,
+			       node->num_bytes, node->for_cow, block_group,
+			       &cached_state);
+	return ret ? ret : err;
 }
 
 /* helper function to actually process a single delayed ref entry */
@@ -8391,6 +8486,8 @@ btrfs_create_block_group_cache(struct btrfs_root *root, u64 start, u64 size)
 	INIT_LIST_HEAD(&cache->cluster_list);
 	INIT_LIST_HEAD(&cache->new_bg_list);
 	btrfs_init_free_space_ctl(cache);
+	extent_io_tree_init(&cache->ref_lock,
+			    root->fs_info->btree_inode->i_mapping);
 
 	return cache;
 }

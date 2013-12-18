@@ -1275,6 +1275,9 @@ struct btrfs_block_group_cache {
 
 	/* For delayed block group creation */
 	struct list_head new_bg_list;
+
+	/* For locking reference modifications */
+	struct extent_io_tree ref_lock;
 };
 
 /* delayed seq elem */
@@ -3350,6 +3353,14 @@ int btrfs_init_space_info(struct btrfs_fs_info *fs_info);
 int btrfs_delayed_refs_qgroup_accounting(struct btrfs_trans_handle *trans,
 					 struct btrfs_fs_info *fs_info);
 int __get_raid_index(u64 flags);
+int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
+		   u64 bytenr,u64 num_bytes, int for_cow,
+		   struct btrfs_block_group_cache **block_group,
+		   struct extent_state **cached_state);
+int btrfs_unlock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
+		     u64 bytenr, u64 num_bytes, int for_cow,
+		     struct btrfs_block_group_cache *block_group,
+		     struct extent_state **cached_state);
 /* ctree.c */
 int btrfs_bin_search(struct extent_buffer *eb, struct btrfs_key *key,
 		     int level, int *slot);
