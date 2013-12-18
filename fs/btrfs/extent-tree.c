@@ -695,6 +695,10 @@ int btrfs_lock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
 	struct btrfs_block_group_cache *cache;
 	int ret;
 
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(fs_info->extent_root->dummy_root))
+		return 0;
+#endif
 	if (!fs_info->quota_enabled || !is_fstree(root_objectid))
 		return 0;
 
@@ -733,6 +737,10 @@ int btrfs_unlock_ref(struct btrfs_fs_info *fs_info, u64 root_objectid,
 {
 	int ret;
 
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(fs_info->extent_root->dummy_root))
+		return 0;
+#endif
 	if (!fs_info->quota_enabled || !is_fstree(root_objectid))
 		return 0;
 
@@ -3347,6 +3355,10 @@ static int __btrfs_mod_ref(struct btrfs_trans_handle *trans,
 	int (*process_func)(struct btrfs_trans_handle *, struct btrfs_root *,
 			    u64, u64, u64, u64, u64, u64, int);
 
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(root->dummy_root))
+		return 0;
+#endif
 	ref_root = btrfs_header_owner(buf);
 	nritems = btrfs_header_nritems(buf);
 	level = btrfs_header_level(buf);
@@ -6416,6 +6428,10 @@ int btrfs_free_extent(struct btrfs_trans_handle *trans, struct btrfs_root *root,
 	int ret;
 	struct btrfs_fs_info *fs_info = root->fs_info;
 
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(root->dummy_root))
+		return 0;
+#endif
 	add_pinned_bytes(root->fs_info, num_bytes, owner, root_objectid);
 
 	/*
@@ -7412,6 +7428,15 @@ struct extent_buffer *btrfs_alloc_free_block(struct btrfs_trans_handle *trans,
 	bool skinny_metadata = btrfs_fs_incompat(root->fs_info,
 						 SKINNY_METADATA);
 
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(root->dummy_root)) {
+		buf = btrfs_init_new_buffer(trans, root, root->alloc_bytenr,
+					    blocksize, level);
+		if (!IS_ERR(buf))
+			root->alloc_bytenr += blocksize;
+		return buf;
+	}
+#endif
 	block_rsv = use_block_rsv(trans, root, blocksize);
 	if (IS_ERR(block_rsv))
 		return ERR_CAST(block_rsv);

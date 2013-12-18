@@ -1097,6 +1097,11 @@ struct extent_buffer *btrfs_find_tree_block(struct btrfs_root *root,
 struct extent_buffer *btrfs_find_create_tree_block(struct btrfs_root *root,
 						 u64 bytenr, u32 blocksize)
 {
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(root->dummy_root))
+		return alloc_test_extent_buffer(root->fs_info, bytenr,
+						blocksize);
+#endif
 	return alloc_extent_buffer(root->fs_info, bytenr, blocksize);
 }
 
@@ -1247,6 +1252,7 @@ struct btrfs_root *btrfs_alloc_dummy_root(void)
 		return ERR_PTR(-ENOMEM);
 	__setup_root(4096, 4096, 4096, 4096, root, NULL, 1);
 	root->dummy_root = 1;
+	root->alloc_bytenr = 0;
 
 	return root;
 }
@@ -2036,7 +2042,7 @@ static void free_root_pointers(struct btrfs_fs_info *info, int chunk_root)
 		free_root_extent_buffers(info->chunk_root);
 }
 
-static void del_fs_roots(struct btrfs_fs_info *fs_info)
+void btrfs_free_fs_roots(struct btrfs_fs_info *fs_info)
 {
 	int ret;
 	struct btrfs_root *gang[8];
@@ -2949,7 +2955,7 @@ fail_qgroup:
 fail_trans_kthread:
 	kthread_stop(fs_info->transaction_kthread);
 	btrfs_cleanup_transaction(fs_info->tree_root);
-	del_fs_roots(fs_info);
+	btrfs_free_fs_roots(fs_info);
 fail_cleaner:
 	kthread_stop(fs_info->cleaner_kthread);
 
@@ -3480,8 +3486,10 @@ void btrfs_drop_and_free_fs_root(struct btrfs_fs_info *fs_info,
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		btrfs_free_log(NULL, root);
 
-	__btrfs_remove_free_space_cache(root->free_ino_pinned);
-	__btrfs_remove_free_space_cache(root->free_ino_ctl);
+	if (root->free_ino_pinned)
+		__btrfs_remove_free_space_cache(root->free_ino_pinned);
+	if (root->free_ino_ctl)
+		__btrfs_remove_free_space_cache(root->free_ino_ctl);
 	free_fs_root(root);
 }
 
@@ -3604,7 +3612,7 @@ int close_ctree(struct btrfs_root *root)
 
 	btrfs_sysfs_remove_one(fs_info);
 
-	del_fs_roots(fs_info);
+	btrfs_free_fs_roots(fs_info);
 
 	btrfs_put_block_group_cache(fs_info);
 
