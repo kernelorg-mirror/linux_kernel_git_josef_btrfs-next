@@ -1491,8 +1491,21 @@ struct btrfs_root *btrfs_read_fs_root(struct btrfs_root *tree_root,
 		return root;
 
 	if (root->root_key.objectid != BTRFS_TREE_LOG_OBJECTID) {
+		int ret;
+
 		root->ref_cows = 1;
 		btrfs_check_and_init_root_item(&root->root_item);
+		ret = percpu_counter_init(&root->delalloc_bytes, 0);
+		if (ret) {
+			kfree(root);
+			return ERR_PTR(ret);
+		}
+		ret = percpu_counter_init(&root->ordered_bytes, 0);
+		if (ret) {
+			percpu_counter_destroy(&root->delalloc_bytes);
+			kfree(root);
+			return ERR_PTR(ret);
+		}
 	}
 
 	return root;
@@ -1514,6 +1527,7 @@ int btrfs_init_fs_root(struct btrfs_root *root)
 	mutex_init(&root->fs_commit_mutex);
 	spin_lock_init(&root->cache_lock);
 	init_waitqueue_head(&root->cache_wait);
+	root->bandwidth_limit = 0;
 
 	ret = get_anon_bdev(&root->anon_dev);
 	if (ret)
@@ -3480,6 +3494,12 @@ static void free_fs_root(struct btrfs_root *root)
 	root->orphan_block_rsv = NULL;
 	if (root->anon_dev)
 		free_anon_bdev(root->anon_dev);
+	if (percpu_counter_sum(&root->delalloc_bytes))
+		printk(KERN_ERR "delalloc bytes is %Lu\n", percpu_counter_sum(&root->delalloc_bytes));
+	if (percpu_counter_sum(&root->ordered_bytes))
+		printk(KERN_ERR "ordered bytes is %Lu\n", percpu_counter_sum(&root->ordered_bytes));
+	percpu_counter_destroy(&root->delalloc_bytes);
+	percpu_counter_destroy(&root->ordered_bytes);
 	free_extent_buffer(root->node);
 	free_extent_buffer(root->commit_root);
 	kfree(root->free_ino_ctl);

@@ -1528,6 +1528,8 @@ static void btrfs_set_bit_hook(struct inode *inode,
 
 		__percpu_counter_add(&root->fs_info->delalloc_bytes, len,
 				     root->fs_info->delalloc_batch);
+		__percpu_counter_add(&root->delalloc_bytes, len,
+				     root->fs_info->delalloc_batch);
 		spin_lock(&BTRFS_I(inode)->lock);
 		BTRFS_I(inode)->delalloc_bytes += len;
 		if (do_list && !test_bit(BTRFS_INODE_IN_DELALLOC_LIST,
@@ -1576,6 +1578,8 @@ static void btrfs_clear_bit_hook(struct inode *inode,
 			btrfs_free_reserved_data_space(inode, len);
 
 		__percpu_counter_add(&root->fs_info->delalloc_bytes, -len,
+				     root->fs_info->delalloc_batch);
+		__percpu_counter_add(&root->delalloc_bytes, -len,
 				     root->fs_info->delalloc_batch);
 		spin_lock(&BTRFS_I(inode)->lock);
 		BTRFS_I(inode)->delalloc_bytes -= len;
@@ -7417,6 +7421,7 @@ static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 		ret = btrfs_delalloc_reserve_space(inode, count);
 		if (ret)
 			goto out;
+		btrfs_balance_root_bandwidth(BTRFS_I(inode)->root, count);
 	} else if (unlikely(test_bit(BTRFS_INODE_READDIO_NEED_LOCK,
 				     &BTRFS_I(inode)->runtime_flags))) {
 		inode_dio_done(inode);
@@ -7658,6 +7663,7 @@ int btrfs_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 		goto out_noreserve;
 	}
 
+	btrfs_balance_root_bandwidth(root, PAGE_CACHE_SIZE);
 	ret = VM_FAULT_NOPAGE; /* make the VM retry the fault */
 again:
 	lock_page(page);
@@ -8417,6 +8423,12 @@ static int __start_delalloc_inodes(struct btrfs_root *root, int delay_iput)
 	struct list_head works;
 	struct list_head splice;
 	int ret = 0;
+	int wait = 0;
+
+	if (delay_iput == 2) {
+		wait = 1;
+		delay_iput = 0;
+	}
 
 	INIT_LIST_HEAD(&works);
 	INIT_LIST_HEAD(&splice);
@@ -8436,7 +8448,7 @@ static int __start_delalloc_inodes(struct btrfs_root *root, int delay_iput)
 		}
 		spin_unlock(&root->delalloc_lock);
 
-		work = btrfs_alloc_delalloc_work(inode, 0, delay_iput);
+		work = btrfs_alloc_delalloc_work(inode, wait, delay_iput);
 		if (unlikely(!work)) {
 			if (delay_iput)
 				btrfs_add_delayed_iput(inode);
@@ -8495,6 +8507,26 @@ int btrfs_start_delalloc_inodes(struct btrfs_root *root, int delay_iput)
 	}
 	atomic_dec(&root->fs_info->async_submit_draining);
 	return ret;
+}
+
+void btrfs_balance_root_bandwidth(struct btrfs_root *root, u64 num_bytes)
+{
+	u64 delalloc, ordered;
+	u64 bandwidth = root->bandwidth_limit;
+
+	if (!bandwidth)
+		return;
+	delalloc = percpu_counter_sum_positive(&root->delalloc_bytes);
+	ordered = percpu_counter_sum_positive(&root->ordered_bytes);
+
+	if (delalloc + ordered + num_bytes <= bandwidth)
+		return;
+
+	printk(KERN_ERR "delalloc %Lu, ordered %Lu, bandwidth %Lu\n", delalloc, ordered, bandwidth);
+	if (delalloc >= ordered)
+		btrfs_start_delalloc_inodes(root, 2);
+	else
+		btrfs_wait_ordered_extents(root, 1);
 }
 
 int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int delay_iput)

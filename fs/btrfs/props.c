@@ -35,11 +35,100 @@ struct prop_handler {
 	int inheritable;
 };
 
-static int prop_compression_validate(const char *value, size_t len);
+static int prop_compression_validate(const char *value, size_t len)
+{
+	if (!strncmp("lzo", value, len))
+		return 0;
+	else if (!strncmp("zlib", value, len))
+		return 0;
+
+	return -EINVAL;
+}
+
 static int prop_compression_apply(struct inode *inode,
 				  const char *value,
-				  size_t len);
-static const char *prop_compression_extract(struct inode *inode);
+				  size_t len)
+{
+	int type;
+
+	if (len == 0) {
+		BTRFS_I(inode)->flags |= BTRFS_INODE_NOCOMPRESS;
+		BTRFS_I(inode)->flags &= ~BTRFS_INODE_COMPRESS;
+		BTRFS_I(inode)->force_compress = BTRFS_COMPRESS_NONE;
+
+		return 0;
+	}
+
+	if (!strncmp("lzo", value, len))
+		type = BTRFS_COMPRESS_LZO;
+	else if (!strncmp("zlib", value, len))
+		type = BTRFS_COMPRESS_ZLIB;
+	else
+		return -EINVAL;
+
+	BTRFS_I(inode)->flags &= ~BTRFS_INODE_NOCOMPRESS;
+	BTRFS_I(inode)->flags |= BTRFS_INODE_COMPRESS;
+	BTRFS_I(inode)->force_compress = type;
+
+	return 0;
+}
+
+static const char *prop_compression_extract(struct inode *inode)
+{
+	switch (BTRFS_I(inode)->force_compress) {
+	case BTRFS_COMPRESS_ZLIB:
+		return "zlib";
+	case BTRFS_COMPRESS_LZO:
+		return "lzo";
+	}
+
+	return NULL;
+}
+
+static int prop_maxbandwidth_validate(const char *value, size_t len)
+{
+	char *buf;
+	u64 num;
+	int ret = 0;
+
+	buf = kmalloc(len + 1, GFP_NOFS);
+	if (!buf)
+		return -ENOMEM;
+	memcpy(buf, value, len);
+	buf[len] = '\0';
+
+	if (kstrtoull(buf, 0, &num))
+		ret = -EINVAL;
+	kfree(buf);
+	return ret;
+}
+
+static int prop_maxbandwidth_apply(struct inode *inode, const char *value,
+				   size_t len)
+{
+	char *buf;
+	u64 num;
+
+	/* This property only works for the subvol's inode */
+	if (btrfs_ino(inode) != BTRFS_FIRST_FREE_OBJECTID)
+		return -EINVAL;
+
+	buf = kmalloc(len + 1, GFP_NOFS);
+	if (!buf)
+		return -ENOMEM;
+	memcpy(buf, value, len);
+	buf[len] = '\0';
+
+	if (kstrtoull(buf, 0, &num)) {
+		kfree(buf);
+		return -EINVAL;
+	}
+	kfree(buf);
+	printk(KERN_ERR "applying bandwidth limit %Lu\n", num);
+	BTRFS_I(inode)->root->bandwidth_limit = num * 1024 * 1024;
+
+	return 0;
+}
 
 static struct prop_handler prop_handlers[] = {
 	{
@@ -48,6 +137,12 @@ static struct prop_handler prop_handlers[] = {
 		.apply = prop_compression_apply,
 		.extract = prop_compression_extract,
 		.inheritable = 1
+	},
+	{
+		.xattr_name = XATTR_BTRFS_PREFIX "maxbandwidth",
+		.validate = prop_maxbandwidth_validate,
+		.apply = prop_maxbandwidth_apply,
+		.inheritable = 0,
 	},
 	{
 		.xattr_name = NULL
@@ -374,54 +469,4 @@ int btrfs_subvol_inherit_props(struct btrfs_trans_handle *trans,
 	iput(parent_inode);
 
 	return ret;
-}
-
-static int prop_compression_validate(const char *value, size_t len)
-{
-	if (!strncmp("lzo", value, len))
-		return 0;
-	else if (!strncmp("zlib", value, len))
-		return 0;
-
-	return -EINVAL;
-}
-
-static int prop_compression_apply(struct inode *inode,
-				  const char *value,
-				  size_t len)
-{
-	int type;
-
-	if (len == 0) {
-		BTRFS_I(inode)->flags |= BTRFS_INODE_NOCOMPRESS;
-		BTRFS_I(inode)->flags &= ~BTRFS_INODE_COMPRESS;
-		BTRFS_I(inode)->force_compress = BTRFS_COMPRESS_NONE;
-
-		return 0;
-	}
-
-	if (!strncmp("lzo", value, len))
-		type = BTRFS_COMPRESS_LZO;
-	else if (!strncmp("zlib", value, len))
-		type = BTRFS_COMPRESS_ZLIB;
-	else
-		return -EINVAL;
-
-	BTRFS_I(inode)->flags &= ~BTRFS_INODE_NOCOMPRESS;
-	BTRFS_I(inode)->flags |= BTRFS_INODE_COMPRESS;
-	BTRFS_I(inode)->force_compress = type;
-
-	return 0;
-}
-
-static const char *prop_compression_extract(struct inode *inode)
-{
-	switch (BTRFS_I(inode)->force_compress) {
-	case BTRFS_COMPRESS_ZLIB:
-		return "zlib";
-	case BTRFS_COMPRESS_LZO:
-		return "lzo";
-	}
-
-	return NULL;
 }

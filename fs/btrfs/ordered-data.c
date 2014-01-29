@@ -241,6 +241,8 @@ static int __btrfs_add_ordered_extent(struct inode *inode, u64 file_offset,
 			      &root->fs_info->ordered_roots);
 		spin_unlock(&root->fs_info->ordered_root_lock);
 	}
+	__percpu_counter_add(&root->ordered_bytes, disk_len,
+			     root->fs_info->delalloc_batch);
 	spin_unlock(&root->ordered_extent_lock);
 
 	return 0;
@@ -311,6 +313,7 @@ int btrfs_dec_test_first_ordered_pending(struct inode *inode,
 	struct btrfs_ordered_inode_tree *tree;
 	struct rb_node *node;
 	struct btrfs_ordered_extent *entry = NULL;
+	struct btrfs_root *root = BTRFS_I(inode)->root;
 	int ret;
 	unsigned long flags;
 	u64 dec_end;
@@ -349,10 +352,13 @@ int btrfs_dec_test_first_ordered_pending(struct inode *inode,
 	if (!uptodate)
 		set_bit(BTRFS_ORDERED_IOERR, &entry->flags);
 
-	if (entry->bytes_left == 0)
+	if (entry->bytes_left == 0) {
 		ret = test_and_set_bit(BTRFS_ORDERED_IO_DONE, &entry->flags);
-	else
+		__percpu_counter_add(&root->ordered_bytes, -entry->disk_len,
+				     root->fs_info->delalloc_batch);
+	} else {
 		ret = 1;
+	}
 out:
 	if (!ret && cached && entry) {
 		*cached = entry;
@@ -376,6 +382,7 @@ int btrfs_dec_test_ordered_pending(struct inode *inode,
 				   u64 file_offset, u64 io_size, int uptodate)
 {
 	struct btrfs_ordered_inode_tree *tree;
+	struct btrfs_root *root = BTRFS_I(inode)->root;
 	struct rb_node *node;
 	struct btrfs_ordered_extent *entry = NULL;
 	unsigned long flags;
@@ -410,10 +417,13 @@ have_entry:
 	if (!uptodate)
 		set_bit(BTRFS_ORDERED_IOERR, &entry->flags);
 
-	if (entry->bytes_left == 0)
+	if (entry->bytes_left == 0) {
 		ret = test_and_set_bit(BTRFS_ORDERED_IO_DONE, &entry->flags);
-	else
+		__percpu_counter_add(&root->ordered_bytes, -entry->disk_len,
+				     root->fs_info->delalloc_batch);
+	} else {
 		ret = 1;
+	}
 out:
 	if (!ret && cached && entry) {
 		*cached = entry;

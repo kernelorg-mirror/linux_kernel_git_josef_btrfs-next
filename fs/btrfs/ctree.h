@@ -1822,6 +1822,10 @@ struct btrfs_root {
 	 * manipulation with the read-only status via SUBVOL_SETFLAGS
 	 */
 	int send_in_progress;
+
+	struct percpu_counter delalloc_bytes;
+	struct percpu_counter ordered_bytes;
+	u64 bandwidth_limit;
 };
 
 struct btrfs_ioctl_defrag_range_args {
@@ -3709,6 +3713,7 @@ int btrfs_start_delalloc_inodes(struct btrfs_root *root, int delay_iput);
 int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int delay_iput);
 int btrfs_set_extent_delalloc(struct inode *inode, u64 start, u64 end,
 			      struct extent_state **cached_state);
+void btrfs_balance_root_bandwidth(struct btrfs_root *root, u64 num_bytes);
 int btrfs_create_subvol_root(struct btrfs_trans_handle *trans,
 			     struct btrfs_root *new_root,
 			     struct btrfs_root *parent_root,
