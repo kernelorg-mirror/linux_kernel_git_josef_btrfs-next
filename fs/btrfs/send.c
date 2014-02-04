@@ -1249,13 +1249,17 @@ static int find_extent_clone(struct send_ctx *sctx,
 	}
 	logical = disk_byte + btrfs_file_extent_offset(eb, fi);
 
+	down_read(&sctx->send_root->fs_info->commit_root_sem);
 	ret = extent_from_logical(sctx->send_root->fs_info, disk_byte, tmp_path,
 				  &found_key, &flags);
 	btrfs_release_path(tmp_path);
 
-	if (ret < 0)
+	if (ret < 0) {
+		up_read(&sctx->send_root->fs_info->commit_root_sem);
 		goto out;
+	}
 	if (flags & BTRFS_EXTENT_FLAG_TREE_BLOCK) {
+		up_read(&sctx->send_root->fs_info->commit_root_sem);
 		ret = -EIO;
 		goto out;
 	}
@@ -1297,7 +1301,7 @@ static int find_extent_clone(struct send_ctx *sctx,
 	ret = iterate_extent_inodes(sctx->send_root->fs_info,
 					found_key.objectid, extent_item_pos, 1,
 					__iterate_backrefs, backref_ctx);
-
+	up_read(&sctx->send_root->fs_info->commit_root_sem);
 	if (ret < 0)
 		goto out;
 

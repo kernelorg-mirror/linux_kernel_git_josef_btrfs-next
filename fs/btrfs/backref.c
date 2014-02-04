@@ -1588,18 +1588,24 @@ int iterate_inodes_from_logical(u64 logical, struct btrfs_fs_info *fs_info,
 	struct btrfs_key found_key;
 	int search_commit_root = path->search_commit_root;
 
+	if (search_commit_root)
+		down_read(&fs_info->commit_root_sem);
 	ret = extent_from_logical(fs_info, logical, path, &found_key, &flags);
 	btrfs_release_path(path);
 	if (ret < 0)
-		return ret;
-	if (flags & BTRFS_EXTENT_FLAG_TREE_BLOCK)
-		return -EINVAL;
+		goto out;
+	if (flags & BTRFS_EXTENT_FLAG_TREE_BLOCK) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	extent_item_pos = logical - found_key.objectid;
 	ret = iterate_extent_inodes(fs_info, found_key.objectid,
 					extent_item_pos, search_commit_root,
 					iterate, ctx);
-
+out:
+	if (search_commit_root)
+		up_read(&fs_info->commit_root_sem);
 	return ret;
 }
 

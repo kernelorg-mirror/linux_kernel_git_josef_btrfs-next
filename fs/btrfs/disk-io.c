@@ -2279,6 +2279,7 @@ int open_ctree(struct super_block *sb,
 	mutex_init(&fs_info->volume_mutex);
 	init_rwsem(&fs_info->extent_commit_sem);
 	init_rwsem(&fs_info->cleanup_work_sem);
+	init_rwsem(&fs_info->commit_root_sem);
 	init_rwsem(&fs_info->subvol_sem);
 	sema_init(&fs_info->uuid_tree_rescan_sem, 1);
 	fs_info->dev_replace.lock_owner = 0;

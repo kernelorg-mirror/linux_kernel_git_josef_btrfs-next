@@ -1819,8 +1819,10 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	 */
 	mutex_lock(&root->fs_info->tree_log_mutex);
 
+	down_write(&root->fs_info->commit_root_sem);
 	ret = commit_fs_roots(trans, root);
 	if (ret) {
+		up_write(&root->fs_info->commit_root_sem);
 		mutex_unlock(&root->fs_info->tree_log_mutex);
 		mutex_unlock(&root->fs_info->reloc_mutex);
 		goto cleanup_transaction;
@@ -1842,6 +1844,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	ret = commit_cowonly_roots(trans, root);
 	if (ret) {
+		up_write(&root->fs_info->commit_root_sem);
 		mutex_unlock(&root->fs_info->tree_log_mutex);
 		mutex_unlock(&root->fs_info->reloc_mutex);
 		goto cleanup_transaction;
@@ -1853,6 +1856,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	 */
 	if (unlikely(ACCESS_ONCE(cur_trans->aborted))) {
 		ret = cur_trans->aborted;
+		up_write(&root->fs_info->commit_root_sem);
 		mutex_unlock(&root->fs_info->tree_log_mutex);
 		mutex_unlock(&root->fs_info->reloc_mutex);
 		goto cleanup_transaction;
@@ -1870,6 +1874,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 			    root->fs_info->chunk_root->node);
 	switch_commit_root(root->fs_info->chunk_root);
 
+	up_write(&root->fs_info->commit_root_sem);
 	assert_qgroups_uptodate(trans);
 	update_super_roots(root);
 

@@ -1440,7 +1440,7 @@ struct btrfs_fs_info {
 	struct mutex ordered_extent_flush_mutex;
 
 	struct rw_semaphore extent_commit_sem;
-
+	struct rw_semaphore commit_root_sem;
 	struct rw_semaphore cleanup_work_sem;
 
 	struct rw_semaphore subvol_sem;
