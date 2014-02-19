@@ -1579,8 +1579,6 @@ static void cleanup_transaction(struct btrfs_trans_handle *trans,
 
 	trace_btrfs_transaction_commit(root);
 
-	btrfs_scrub_continue(root);
-
 	if (current->journal_info == trans)
 		current->journal_info = NULL;
 
@@ -1755,7 +1753,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	/* ->aborted might be set after the previous check, so check it */
 	if (unlikely(ACCESS_ONCE(cur_trans->aborted))) {
 		ret = cur_trans->aborted;
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 	/*
 	 * the reloc mutex makes sure that we stop
@@ -1772,7 +1770,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	ret = create_pending_snapshots(trans, root->fs_info);
 	if (ret) {
 		mutex_unlock(&root->fs_info->reloc_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	/*
@@ -1788,13 +1786,13 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	ret = btrfs_run_delayed_items(trans, root);
 	if (ret) {
 		mutex_unlock(&root->fs_info->reloc_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
 	if (ret) {
 		mutex_unlock(&root->fs_info->reloc_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	/*
@@ -1824,7 +1822,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	if (ret) {
 		mutex_unlock(&root->fs_info->tree_log_mutex);
 		mutex_unlock(&root->fs_info->reloc_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	/*
@@ -1845,7 +1843,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	if (ret) {
 		mutex_unlock(&root->fs_info->tree_log_mutex);
 		mutex_unlock(&root->fs_info->reloc_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	/*
@@ -1856,7 +1854,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 		ret = cur_trans->aborted;
 		mutex_unlock(&root->fs_info->tree_log_mutex);
 		mutex_unlock(&root->fs_info->reloc_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	btrfs_prepare_extent_commit(trans, root);
@@ -1892,13 +1890,13 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 		btrfs_error(root->fs_info, ret,
 			    "Error while writing out transaction");
 		mutex_unlock(&root->fs_info->tree_log_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	ret = write_ctree_super(trans, root, 0);
 	if (ret) {
 		mutex_unlock(&root->fs_info->tree_log_mutex);
-		goto cleanup_transaction;
+		goto scrub_continue;
 	}
 
 	/*
@@ -1941,6 +1939,8 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	return ret;
 
+scrub_continue:
+	btrfs_scrub_continue(root);
 cleanup_transaction:
 	btrfs_trans_release_metadata(trans, root);
 	trans->block_rsv = NULL;
