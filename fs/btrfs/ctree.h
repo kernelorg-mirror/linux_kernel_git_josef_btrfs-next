@@ -1817,6 +1817,8 @@ struct btrfs_root {
 	struct list_head delalloc_inodes;
 	struct list_head delalloc_root;
 	u64 nr_delalloc_inodes;
+
+	struct mutex ordered_extent_mutex;
 	/*
 	 * this is used by the balancing code to wait for all the pending
 	 * ordered extents
