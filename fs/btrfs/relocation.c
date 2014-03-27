@@ -31,6 +31,7 @@
 #include "async-thread.h"
 #include "free-space-cache.h"
 #include "inode-map.h"
+#include "ref-verify.h"
 
 /*
  * backref_node, mapping_node and tree_block start with this
