@@ -1091,11 +1091,28 @@ int btrfs_write_out_cache(struct btrfs_root *root,
 		spin_unlock(&block_group->lock);
 		return 0;
 	}
+
+	if (block_group->delalloc_bytes) {
+		block_group->disk_cache_state = BTRFS_DC_WRITTEN;
+		spin_unlock(&block_group->lock);
+		return 0;
+	}
 	spin_unlock(&block_group->lock);
 
 	inode = lookup_free_space_inode(root, block_group, path);
 	if (IS_ERR(inode))
 		return 0;
+
+	if (block_group->flags & BTRFS_BLOCK_GROUP_DATA) {
+		down_write(&block_group->data_rwsem);
+		spin_lock(&block_group->lock);
+		if (block_group->delalloc_bytes) {
+			block_group->disk_cache_state = BTRFS_DC_WRITTEN;
+			spin_unlock(&block_group->lock);
+			goto out;
+		}
+		spin_unlock(&block_group->lock);
+	}
 
 	ret = __btrfs_write_out_cache(root, inode, ctl, block_group, trans,
 				      path, block_group->key.objectid);
@@ -1110,6 +1127,9 @@ int btrfs_write_out_cache(struct btrfs_root *root,
 			block_group->key.objectid);
 #endif
 	}
+out:
+	if (block_group->flags & BTRFS_BLOCK_GROUP_DATA)
+		up_write(&block_group->data_rwsem);
 
 	iput(inode);
 	return ret;
