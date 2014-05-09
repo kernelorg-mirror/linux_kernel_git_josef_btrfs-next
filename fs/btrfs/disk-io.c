@@ -50,6 +50,7 @@
 #include "sysfs.h"
 #include "qgroup.h"
 #include "compression.h"
+#include "ref-verify.h"
 
 #ifdef CONFIG_X86
 #include <asm/cpufeature.h>
@@ -2664,6 +2665,12 @@ int open_ctree(struct super_block *sb,
 	INIT_RADIX_TREE(&fs_info->reada_tree, GFP_NOFS & ~__GFP_DIRECT_RECLAIM);
 	spin_lock_init(&fs_info->reada_lock);
 
+#ifdef CONFIG_BTRFS_FS_REF_VERIFY
+	spin_lock_init(&fs_info->ref_verify_lock);
+	fs_info->block_tree = RB_ROOT;
+	fs_info->ref_verify_enabled = true;
+#endif
+
 	fs_info->thread_pool_size = min_t(unsigned long,
 					  num_online_cpus() + 2, 8);
 
@@ -3078,6 +3085,13 @@ retry_root_backup:
 	ret = btrfs_read_qgroup_config(fs_info);
 	if (ret)
 		goto fail_trans_kthread;
+
+#ifdef CONFIG_BTRFS_FS_REF_VERIFY
+	if (btrfs_build_ref_tree(fs_info)) {
+		fs_info->ref_verify_enabled = false;
+		printk(KERN_ERR "BTRFS: couldn't build ref tree\n");
+	}
+#endif
 
 	/* do not make disk changes in broken FS or nologreplay is given */
 	if (btrfs_super_log_root(disk_super) != 0 &&
@@ -3936,6 +3950,7 @@ void close_ctree(struct btrfs_fs_info *fs_info)
 	cleanup_srcu_struct(&fs_info->subvol_srcu);
 
 	btrfs_free_stripe_hash_table(fs_info);
+	btrfs_free_ref_cache(fs_info);
 
 	__btrfs_free_block_rsv(root->orphan_block_rsv);
 	root->orphan_block_rsv = NULL;
