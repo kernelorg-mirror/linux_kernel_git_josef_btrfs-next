@@ -2488,7 +2488,8 @@ out:
 
 static struct new_sa_defrag_extent *
 record_old_file_extents(struct inode *inode,
-			struct btrfs_ordered_extent *ordered)
+			struct btrfs_ordered_extent *ordered,
+			u64 last_snapshot)
 {
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	struct btrfs_path *path;
@@ -2560,6 +2561,9 @@ record_old_file_extents(struct inode *inode,
 
 		num_bytes = btrfs_file_extent_num_bytes(l, extent);
 		if (key.offset + num_bytes < new->file_pos)
+			goto next;
+
+		if (btrfs_file_extent_generation(l, extent) > last_snapshot)
 			goto next;
 
 		disk_bytenr = btrfs_file_extent_disk_bytenr(l, extent);
@@ -2677,7 +2681,8 @@ static int btrfs_finish_ordered_io(struct btrfs_ordered_extent *ordered_extent)
 		u64 last_snapshot = btrfs_root_last_snapshot(&root->root_item);
 		if (last_snapshot >= BTRFS_I(inode)->generation)
 			/* the inode is shared */
-			new = record_old_file_extents(inode, ordered_extent);
+			new = record_old_file_extents(inode, ordered_extent,
+						      last_snapshot);
 
 		clear_extent_bit(io_tree, ordered_extent->file_offset,
 			ordered_extent->file_offset + ordered_extent->len - 1,
