@@ -2,6 +2,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/hardirq.h>
+#include <linux/list_lru.h>
 #include "ctree.h"
 #include "extent_map.h"
 
@@ -18,6 +19,93 @@ int __init extent_map_init(void)
 	return 0;
 }
 
+static enum lru_status extent_map_isolate(struct list_head *item,
+					  spinlock_t *lru_lock,
+					  void *arg)
+{
+	struct extent_map *em;
+	struct extent_map_tree *tree;
+	struct list_head *dispose = arg;
+
+	em = list_entry(item, struct extent_map, lru);
+	tree = em->tree;
+	if (!write_trylock(&tree->lock))
+		return LRU_SKIP;
+
+	ASSERT(extent_map_in_tree(em));
+	/*
+	 * If our ref is greater than 1, if we are logging, or we were modified
+	 * in this transaction and are on a modified list then we can't drop us.
+	 */
+	if ((atomic_read(&em->refs) > 1) ||
+	    test_bit(EXTENT_FLAG_LOGGING, &em->flags) ||
+	    test_bit(EXTENT_FLAG_PINNED, &em->flags) ||
+	    (em->generation == tree->fs_info->generation &&
+	     !list_empty(&em->list))) {
+		write_unlock(&tree->lock);
+		return LRU_ROTATE;
+	}
+
+	rb_erase(&em->rb_node, &tree->map);
+	list_del_init(&em->list);
+	RB_CLEAR_NODE(&em->rb_node);
+
+	list_move(item, dispose);
+	write_unlock(&tree->lock);
+	return LRU_REMOVED;
+}
+
+static unsigned long extent_map_scan_objects(struct shrinker *shrinker,
+					     struct shrink_control *sc)
+{
+	struct btrfs_fs_info *fs_info = container_of(shrinker,
+						     struct btrfs_fs_info,
+						     em_shrinker);
+	LIST_HEAD(dispose);
+	unsigned long freed;
+	unsigned long nr_to_scan = sc->nr_to_scan;
+
+	freed = list_lru_walk_node(&fs_info->em_lru, sc->nid,
+				   extent_map_isolate, &dispose, &nr_to_scan);
+
+	while (!list_empty(&dispose)) {
+		struct extent_map *em;
+
+		em = list_first_entry(&dispose, struct extent_map, lru);
+		list_del_init(&em->lru);
+		free_extent_map(em);
+	}
+
+	return freed;
+}
+
+static unsigned long extent_map_count_objects(struct shrinker *shrinker,
+					      struct shrink_control *sc)
+{
+	struct btrfs_fs_info *fs_info = container_of(shrinker,
+						     struct btrfs_fs_info,
+						     em_shrinker);
+	return list_lru_count_node(&fs_info->em_lru, sc->nid);
+}
+
+int extent_map_init_lru(struct btrfs_fs_info *fs_info)
+{
+	if (list_lru_init(&fs_info->em_lru))
+		return -ENOMEM;
+	fs_info->em_shrinker.seeks = DEFAULT_SEEKS;
+	fs_info->em_shrinker.scan_objects = extent_map_scan_objects;
+	fs_info->em_shrinker.count_objects = extent_map_count_objects;
+	fs_info->em_shrinker.flags = SHRINKER_NUMA_AWARE;
+	register_shrinker(&fs_info->em_shrinker);
+	return 0;
+}
+
+void extent_map_exit_lru(struct btrfs_fs_info *fs_info)
+{
+	unregister_shrinker(&fs_info->em_shrinker);
+	list_lru_destroy(&fs_info->em_lru);
+}
+
 void extent_map_exit(void)
 {
 	if (extent_map_cache)
@@ -27,13 +115,17 @@ void extent_map_exit(void)
 /**
  * extent_map_tree_init - initialize extent map tree
  * @tree:		tree to initialize
+ * @fs_info:		fs_info for this object
  *
  * Initialize the extent tree @tree.  Should be called for each new inode
  * or other user of the extent_map interface.
  */
-void extent_map_tree_init(struct extent_map_tree *tree)
+void extent_map_tree_init(struct extent_map_tree *tree,
+			  struct btrfs_fs_info *fs_info)
 {
 	tree->map = RB_ROOT;
+	tree->lru = 0;
+	tree->fs_info = fs_info;
 	INIT_LIST_HEAD(&tree->modified_extents);
 	rwlock_init(&tree->lock);
 }
@@ -57,6 +149,8 @@ struct extent_map *alloc_extent_map(void)
 	em->generation = 0;
 	atomic_set(&em->refs, 1);
 	INIT_LIST_HEAD(&em->list);
+	INIT_LIST_HEAD(&em->lru);
+	em->tree = NULL;
 	return em;
 }
 
@@ -71,8 +165,17 @@ void free_extent_map(struct extent_map *em)
 {
 	if (!em)
 		return;
+
+	if (extent_map_in_tree(em) && em->tree && em->tree->lru) {
+		struct btrfs_fs_info *fs_info;
+		fs_info = em->tree->fs_info;
+		if (atomic_read(&em->refs) == 2)
+			list_lru_add(&fs_info->em_lru, &em->lru);
+	}
+
 	WARN_ON(atomic_read(&em->refs) == 0);
 	if (atomic_dec_and_test(&em->refs)) {
+		WARN_ON(!list_empty(&em->lru));
 		WARN_ON(extent_map_in_tree(em));
 		WARN_ON(!list_empty(&em->list));
 		kmem_cache_free(extent_map_cache, em);
@@ -239,6 +342,9 @@ static void try_merge_map(struct extent_map_tree *tree, struct extent_map *em)
 			em->mod_start = merge->mod_start;
 			em->generation = max(em->generation, merge->generation);
 
+			if (tree->lru)
+				list_lru_del(&tree->fs_info->em_lru,
+					     &merge->lru);
 			rb_erase(&merge->rb_node, &tree->map);
 			RB_CLEAR_NODE(&merge->rb_node);
 			free_extent_map(merge);
@@ -251,10 +357,13 @@ static void try_merge_map(struct extent_map_tree *tree, struct extent_map *em)
 	if (rb && mergable_maps(em, merge)) {
 		em->len += merge->len;
 		em->block_len += merge->block_len;
-		rb_erase(&merge->rb_node, &tree->map);
-		RB_CLEAR_NODE(&merge->rb_node);
 		em->mod_len = (merge->mod_start + merge->mod_len) - em->mod_start;
 		em->generation = max(em->generation, merge->generation);
+
+		if (tree->lru)
+			list_lru_del(&tree->fs_info->em_lru, &merge->lru);
+		rb_erase(&merge->rb_node, &tree->map);
+		RB_CLEAR_NODE(&merge->rb_node);
 		free_extent_map(merge);
 	}
 }
@@ -325,6 +434,7 @@ static inline void setup_extent_mapping(struct extent_map_tree *tree,
 	atomic_inc(&em->refs);
 	em->mod_start = em->start;
 	em->mod_len = em->len;
+	em->tree = tree;
 
 	if (modified)
 		list_move(&em->list, &tree->modified_extents);
@@ -435,6 +545,8 @@ int remove_extent_mapping(struct extent_map_tree *tree, struct extent_map *em)
 	rb_erase(&em->rb_node, &tree->map);
 	if (!test_bit(EXTENT_FLAG_LOGGING, &em->flags))
 		list_del_init(&em->list);
+	if (tree->lru)
+		list_lru_del(&tree->fs_info->em_lru, &em->lru);
 	RB_CLEAR_NODE(&em->rb_node);
 	return ret;
 }
@@ -448,6 +560,8 @@ void replace_extent_mapping(struct extent_map_tree *tree,
 	ASSERT(extent_map_in_tree(cur));
 	if (!test_bit(EXTENT_FLAG_LOGGING, &cur->flags))
 		list_del_init(&cur->list);
+	if (tree->lru)
+		list_lru_del(&tree->fs_info->em_lru, &cur->lru);
 	rb_replace_node(&cur->rb_node, &new->rb_node, &tree->map);
 	RB_CLEAR_NODE(&cur->rb_node);
 

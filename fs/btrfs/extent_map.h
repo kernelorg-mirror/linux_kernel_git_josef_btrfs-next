@@ -35,12 +35,21 @@ struct extent_map {
 	atomic_t refs;
 	unsigned int compress_type;
 	struct list_head list;
+	struct list_head lru;
+	struct extent_map_tree *tree;
 };
 
 struct extent_map_tree {
 	struct rb_root map;
 	struct list_head modified_extents;
+	struct btrfs_fs_info *fs_info;
 	rwlock_t lock;
+	unsigned lru;
+};
+
+struct extent_map_lru {
+	struct list_lru lru;
+	struct shrinker shrinker;
 };
 
 static inline int extent_map_in_tree(const struct extent_map *em)
@@ -62,7 +71,10 @@ static inline u64 extent_map_block_end(struct extent_map *em)
 	return em->block_start + em->block_len;
 }
 
-void extent_map_tree_init(struct extent_map_tree *tree);
+int extent_map_init_lru(struct btrfs_fs_info *fs_info);
+void extent_map_exit_lru(struct btrfs_fs_info *fs_info);
+void extent_map_tree_init(struct extent_map_tree *tree,
+			  struct btrfs_fs_info *fs_info);
 struct extent_map *lookup_extent_mapping(struct extent_map_tree *tree,
 					 u64 start, u64 len);
 int add_extent_mapping(struct extent_map_tree *tree,

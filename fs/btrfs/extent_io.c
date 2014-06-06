@@ -3992,9 +3992,8 @@ int extent_invalidatepage(struct extent_io_tree *tree,
  * are locked or under IO and drops the related state bits if it is safe
  * to drop the page.
  */
-static int try_release_extent_state(struct extent_map_tree *map,
-				    struct extent_io_tree *tree,
-				    struct page *page, gfp_t mask)
+int try_release_extent_state(struct extent_io_tree *tree,
+			     struct page *page, gfp_t mask)
 {
 	u64 start = page_offset(page);
 	u64 end = start + PAGE_CACHE_SIZE - 1;
@@ -4023,54 +4022,6 @@ static int try_release_extent_state(struct extent_map_tree *map,
 			ret = 1;
 	}
 	return ret;
-}
-
-/*
- * a helper for releasepage.  As long as there are no locked extents
- * in the range corresponding to the page, both state records and extent
- * map records are removed
- */
-int try_release_extent_mapping(struct extent_map_tree *map,
-			       struct extent_io_tree *tree, struct page *page,
-			       gfp_t mask)
-{
-	struct extent_map *em;
-	u64 start = page_offset(page);
-	u64 end = start + PAGE_CACHE_SIZE - 1;
-
-	if ((mask & __GFP_WAIT) &&
-	    page->mapping->host->i_size > 16 * 1024 * 1024) {
-		u64 len;
-		while (start <= end) {
-			len = end - start + 1;
-			write_lock(&map->lock);
-			em = lookup_extent_mapping(map, start, len);
-			if (!em) {
-				write_unlock(&map->lock);
-				break;
-			}
-			if (test_bit(EXTENT_FLAG_PINNED, &em->flags) ||
-			    em->start != start) {
-				write_unlock(&map->lock);
-				free_extent_map(em);
-				break;
-			}
-			if (!test_range_bit(tree, em->start,
-					    extent_map_end(em) - 1,
-					    EXTENT_LOCKED | EXTENT_WRITEBACK,
-					    0, NULL)) {
-				remove_extent_mapping(map, em);
-				/* once for the rb tree */
-				free_extent_map(em);
-			}
-			start = extent_map_end(em);
-			write_unlock(&map->lock);
-
-			/* once for us */
-			free_extent_map(em);
-		}
-	}
-	return try_release_extent_state(map, tree, page, mask);
 }
 
 /*

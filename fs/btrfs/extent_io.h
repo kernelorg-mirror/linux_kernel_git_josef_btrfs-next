@@ -186,9 +186,8 @@ typedef struct extent_map *(get_extent_t)(struct inode *inode,
 
 void extent_io_tree_init(struct extent_io_tree *tree,
 			 struct address_space *mapping);
-int try_release_extent_mapping(struct extent_map_tree *map,
-			       struct extent_io_tree *tree, struct page *page,
-			       gfp_t mask);
+int try_release_extent_state(struct extent_io_tree *tree,
+			     struct page *page, gfp_t mask);
 int try_release_extent_buffer(struct page *page);
 int lock_extent(struct extent_io_tree *tree, u64 start, u64 end);
 int lock_extent_bits(struct extent_io_tree *tree, u64 start, u64 end,

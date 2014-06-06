@@ -2238,7 +2238,7 @@ int open_ctree(struct super_block *sb,
 	INIT_LIST_HEAD(&fs_info->dirty_cowonly_roots);
 	INIT_LIST_HEAD(&fs_info->space_info);
 	INIT_LIST_HEAD(&fs_info->tree_mod_seq_list);
-	btrfs_mapping_init(&fs_info->mapping_tree);
+	btrfs_mapping_init(&fs_info->mapping_tree, fs_info);
 	btrfs_init_block_rsv(&fs_info->global_block_rsv,
 			     BTRFS_BLOCK_RSV_GLOBAL);
 	btrfs_init_block_rsv(&fs_info->delalloc_block_rsv,
@@ -2325,7 +2325,8 @@ int open_ctree(struct super_block *sb,
 	extent_io_tree_init(&BTRFS_I(fs_info->btree_inode)->io_tree,
 			     fs_info->btree_inode->i_mapping);
 	BTRFS_I(fs_info->btree_inode)->io_tree.track_uptodate = 0;
-	extent_map_tree_init(&BTRFS_I(fs_info->btree_inode)->extent_tree);
+	extent_map_tree_init(&BTRFS_I(fs_info->btree_inode)->extent_tree,
+			     fs_info);
 
 	BTRFS_I(fs_info->btree_inode)->io_tree.ops = &btree_extent_io_ops;
 
@@ -2384,10 +2385,16 @@ int open_ctree(struct super_block *sb,
 	init_waitqueue_head(&fs_info->transaction_blocked_wait);
 	init_waitqueue_head(&fs_info->async_submit_wait);
 
-	ret = btrfs_alloc_stripe_hash_table(fs_info);
+	ret = extent_map_init_lru(fs_info);
 	if (ret) {
 		err = ret;
 		goto fail_alloc;
+	}
+
+	ret = btrfs_alloc_stripe_hash_table(fs_info);
+	if (ret) {
+		err = ret;
+		goto fail_iput;
 	}
 
 	__setup_root(4096, 4096, 4096, 4096, tree_root,
@@ -3012,6 +3019,7 @@ fail_tree_roots:
 fail_sb_buffer:
 	btrfs_stop_all_workers(fs_info);
 fail_alloc:
+	extent_map_exit_lru(fs_info);
 fail_iput:
 	btrfs_mapping_tree_free(&fs_info->mapping_tree);
 
@@ -3698,6 +3706,7 @@ int close_ctree(struct btrfs_root *root)
 		btrfsic_unmount(root, fs_info->fs_devices);
 #endif
 
+	extent_map_exit_lru(fs_info);
 	btrfs_close_devices(fs_info->fs_devices);
 	btrfs_mapping_tree_free(&fs_info->mapping_tree);
 

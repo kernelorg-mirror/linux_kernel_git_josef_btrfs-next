@@ -24,6 +24,7 @@
 #include "../volumes.h"
 #include "../disk-io.h"
 #include "../qgroup.h"
+#include "../btrfs_inode.h"
 
 static struct vfsmount *test_mnt = NULL;
 
@@ -48,7 +49,11 @@ static struct file_system_type test_type = {
 
 struct inode *btrfs_new_test_inode(void)
 {
-	return new_inode(test_mnt->mnt_sb);
+	struct inode *inode = new_inode(test_mnt->mnt_sb);
+	if (IS_ERR(inode))
+		return inode;
+	BTRFS_I(inode)->extent_tree.lru = 0;
+	return inode;
 }
 
 int btrfs_init_test_fs(void)

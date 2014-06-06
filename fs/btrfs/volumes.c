@@ -4540,9 +4540,10 @@ int btrfs_chunk_readonly(struct btrfs_root *root, u64 chunk_offset)
 	return readonly;
 }
 
-void btrfs_mapping_init(struct btrfs_mapping_tree *tree)
+void btrfs_mapping_init(struct btrfs_mapping_tree *tree,
+			struct btrfs_fs_info *fs_info)
 {
-	extent_map_tree_init(&tree->map_tree);
+	extent_map_tree_init(&tree->map_tree, fs_info);
 }
 
 void btrfs_mapping_tree_free(struct btrfs_mapping_tree *tree)

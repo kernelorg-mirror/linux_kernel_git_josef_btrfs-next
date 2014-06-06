@@ -7602,12 +7602,10 @@ btrfs_readpages(struct file *file, struct address_space *mapping,
 static int __btrfs_releasepage(struct page *page, gfp_t gfp_flags)
 {
 	struct extent_io_tree *tree;
-	struct extent_map_tree *map;
 	int ret;
 
 	tree = &BTRFS_I(page->mapping->host)->io_tree;
-	map = &BTRFS_I(page->mapping->host)->extent_tree;
-	ret = try_release_extent_mapping(map, tree, page, gfp_flags);
+	ret = try_release_extent_state(tree, page, gfp_flags);
 	if (ret == 1) {
 		ClearPagePrivate(page);
 		set_page_private(page, 0);
@@ -8076,7 +8074,8 @@ struct inode *btrfs_alloc_inode(struct super_block *sb)
 	ei->delayed_node = NULL;
 
 	inode = &ei->vfs_inode;
-	extent_map_tree_init(&ei->extent_tree);
+	extent_map_tree_init(&ei->extent_tree, btrfs_sb(sb));
+	ei->extent_tree.lru = 1;
 	extent_io_tree_init(&ei->io_tree, &inode->i_data);
 	extent_io_tree_init(&ei->io_failure_tree, &inode->i_data);
 	ei->io_tree.track_uptodate = 1;
