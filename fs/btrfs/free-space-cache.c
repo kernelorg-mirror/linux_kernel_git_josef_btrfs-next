@@ -27,6 +27,8 @@
 #include "disk-io.h"
 #include "extent_io.h"
 #include "inode-map.h"
+#include "block-rsv.h"
+#include "block-group.h"
 
 #define BITS_PER_BITMAP		(PAGE_CACHE_SIZE * 8)
 #define MAX_CACHE_BYTES_PER_GIG	(32 * 1024)

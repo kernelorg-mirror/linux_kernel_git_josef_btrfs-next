@@ -19,6 +19,8 @@
 #ifndef __BTRFS_FREE_SPACE_CACHE
 #define __BTRFS_FREE_SPACE_CACHE
 
+#include "block-group.h"
+
 struct btrfs_free_space {
 	struct rb_node offset_index;
 	u64 offset;

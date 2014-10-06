@@ -41,6 +41,7 @@
 #include "locking.h"
 #include "volumes.h"
 #include "qgroup.h"
+#include "block-rsv.h"
 
 static struct kmem_cache *btrfs_inode_defrag_cachep;
 /*

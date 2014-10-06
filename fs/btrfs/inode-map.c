@@ -25,6 +25,7 @@
 #include "free-space-cache.h"
 #include "inode-map.h"
 #include "transaction.h"
+#include "block-rsv.h"
 
 static int caching_kthread(void *data)
 {

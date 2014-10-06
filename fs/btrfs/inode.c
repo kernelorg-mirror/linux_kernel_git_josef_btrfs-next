@@ -59,6 +59,8 @@
 #include "backref.h"
 #include "hash.h"
 #include "props.h"
+#include "block-rsv.h"
+#include "block-group.h"
 
 struct btrfs_iget_args {
 	struct btrfs_key *location;

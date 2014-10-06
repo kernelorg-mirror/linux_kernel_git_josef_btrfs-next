@@ -22,6 +22,7 @@
 #include "disk-io.h"
 #include "transaction.h"
 #include "ctree.h"
+#include "block-rsv.h"
 
 #define BTRFS_DELAYED_WRITEBACK		512
 #define BTRFS_DELAYED_BACKGROUND	128

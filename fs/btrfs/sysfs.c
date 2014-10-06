@@ -31,6 +31,7 @@
 #include "transaction.h"
 #include "sysfs.h"
 #include "volumes.h"
+#include "block-group.h"
 
 static inline struct btrfs_fs_info *to_fs_info(struct kobject *kobj);
 

@@ -49,6 +49,8 @@
 #include "raid56.h"
 #include "sysfs.h"
 #include "qgroup.h"
+#include "block-rsv.h"
+#include "block-group.h"
 
 #ifdef CONFIG_X86
 #include <asm/cpufeature.h>
