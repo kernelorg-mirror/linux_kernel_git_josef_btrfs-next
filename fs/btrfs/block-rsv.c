@@ -342,9 +342,9 @@ static int flush_space(struct btrfs_root *root,
 			ret = PTR_ERR(trans);
 			break;
 		}
-		ret = do_chunk_alloc(trans, root->fs_info->extent_root,
-				     btrfs_get_alloc_profile(root, 0),
-				     CHUNK_ALLOC_NO_FORCE);
+		ret = btrfs_maybe_chunk_alloc(trans, root->fs_info,
+					      btrfs_get_alloc_profile(root, 0),
+					      CHUNK_ALLOC_NO_FORCE);
 		btrfs_end_transaction(trans, root);
 		if (ret == -ENOSPC)
 			ret = 0;

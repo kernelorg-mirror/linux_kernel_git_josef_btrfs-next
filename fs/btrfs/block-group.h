@@ -34,7 +34,7 @@
  * CHUNK_ALLOC_FORCE means it must try to allocate one
  *
  */
-enum {
+enum btrfs_chunk_alloc_policy {
 	CHUNK_ALLOC_NO_FORCE = 0,
 	CHUNK_ALLOC_LIMITED = 1,
 	CHUNK_ALLOC_FORCE = 2,
@@ -184,8 +184,6 @@ struct btrfs_block_group_cache {
 	struct list_head bg_list;
 };
 
-int do_chunk_alloc(struct btrfs_trans_handle *trans,
-		   struct btrfs_root *extent_root, u64 flags, int force);
 void add_pinned_bytes(struct btrfs_fs_info *fs_info, u64 num_bytes,
 		      u64 owner, u64 root_objectid);
 int update_block_group(struct btrfs_root *root,
@@ -226,8 +224,11 @@ int btrfs_error_unpin_extent_range(struct btrfs_root *root,
 				   u64 start, u64 end);
 int btrfs_error_discard_extent(struct btrfs_root *root, u64 bytenr,
 			       u64 num_bytes, u64 *actual_bytes);
+int btrfs_maybe_chunk_alloc(struct btrfs_trans_handle *trans,
+			    struct btrfs_fs_info *fs_info, u64 flags,
+			    enum btrfs_chunk_alloc_policy force);
 int btrfs_force_chunk_alloc(struct btrfs_trans_handle *trans,
-			    struct btrfs_root *root, u64 type);
+			    struct btrfs_fs_info *fs_info, u64 type);
 int btrfs_trim_fs(struct btrfs_root *root, struct fstrim_range *range);
 int btrfs_free_reserved_extent(struct btrfs_root *root, u64 start, u64 len,
 			       int delalloc);
