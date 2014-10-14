@@ -1712,6 +1712,7 @@ static int get_first_ref(struct btrfs_root *root, u64 ino,
 	if (ret || found_key.objectid != ino ||
 	    (found_key.type != BTRFS_INODE_REF_KEY &&
 	     found_key.type != BTRFS_INODE_EXTREF_KEY)) {
+		printk(KERN_ERR "couldn't find inode ref\n");
 		ret = -ENOENT;
 		goto out;
 	}
@@ -1741,8 +1742,10 @@ static int get_first_ref(struct btrfs_root *root, u64 ino,
 	if (dir_gen) {
 		ret = get_inode_info(root, parent_dir, NULL, dir_gen, NULL,
 				     NULL, NULL, NULL);
-		if (ret < 0)
+		if (ret < 0) {
+			printk(KERN_ERR "get inode info returned d%d\n", ret);
 			goto out;
+		}
 	}
 
 	*dir = parent_dir;
@@ -2127,8 +2130,12 @@ static int __get_cur_name_and_parent(struct send_ctx *sctx,
 	else
 		ret = get_first_ref(sctx->parent_root, ino,
 				    parent_ino, parent_gen, dest);
-	if (ret < 0)
+	if (ret < 0) {
+		printk(KERN_ERR "ret is %d, ino is %llu, progress %llu\n",
+		       ret, (unsigned long long)ino,
+		       (unsigned long long)sctx->send_progress);
 		goto out;
+	}
 
 	/*
 	 * Check if the ref was overwritten by an inode's ref that was processed
