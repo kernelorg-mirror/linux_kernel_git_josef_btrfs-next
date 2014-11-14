@@ -432,4 +432,18 @@ config DM_SWITCH
 
 	  If unsure, say N.
 
+config DM_POWER_FAIL
+	tristate "Power fail target support"
+	depends on BLK_DEV_DM
+	---help---
+	  This device-mapper target creates a device that can be used for
+	  testing a file systems ability to survive power fails.  There are
+	  several modes of operation in order to test a variety of power fail
+	  scenarios.
+
+	  To compile this code as a module, choos M here: the module will be
+	  called dm-power-fail.
+
+	  If unsure, say N.
+
 endif # MD
