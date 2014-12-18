@@ -581,6 +581,7 @@ static void dispose_list(struct list_head *head)
 		list_del_init(&inode->i_lru);
 
 		evict(inode);
+		cond_resched();
 	}
 }
 
@@ -613,6 +614,7 @@ void evict_inodes(struct super_block *sb)
 		inode_lru_list_del(inode);
 		spin_unlock(&inode->i_lock);
 		list_add(&inode->i_lru, &dispose);
+		cond_resched_lock(&inode_sb_list_lock);
 	}
 	spin_unlock(&inode_sb_list_lock);
 
