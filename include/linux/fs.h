@@ -1234,6 +1234,7 @@ struct super_block {
 #endif
 	const struct xattr_handler **s_xattr;
 
+	spinlock_t		s_inodes_list_lock ____cacheline_aligned_in_smp;
 	struct list_head	s_inodes;	/* all inodes */
 	struct hlist_bl_head	s_anon;		/* anonymous dentries for (nfs) exporting */
 	struct list_head	s_mounts;	/* list of mounts; _not_ for fs use */
