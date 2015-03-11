@@ -48,6 +48,7 @@ enum btrfs_qgroup_operation_type {
 };
 
 struct btrfs_qgroup_operation {
+	struct btrfs_qgroup_operation *head;
 	u64 ref_root;
 	u64 bytenr;
 	u64 num_bytes;
@@ -55,6 +56,7 @@ struct btrfs_qgroup_operation {
 	enum btrfs_qgroup_operation_type type;
 	struct seq_list elem;
 	struct rb_node n;
+	struct list_head opers;
 	struct list_head list;
 };
 

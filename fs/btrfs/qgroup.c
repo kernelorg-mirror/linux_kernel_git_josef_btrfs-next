@@ -1249,55 +1249,30 @@ static int qgroup_oper_exists(struct btrfs_fs_info *fs_info,
 	return 0;
 }
 
-static int comp_oper(struct btrfs_qgroup_operation *oper1,
-		     struct btrfs_qgroup_operation *oper2)
-{
-	if (oper1->bytenr < oper2->bytenr)
-		return -1;
-	if (oper1->bytenr > oper2->bytenr)
-		return 1;
-	if (oper1->seq < oper2->seq)
-		return -1;
-	if (oper1->seq > oper2->seq)
-		return -1;
-	if (oper1->ref_root < oper2->ref_root)
-		return -1;
-	if (oper1->ref_root > oper2->ref_root)
-		return 1;
-	if (oper1->type < oper2->type)
-		return -1;
-	if (oper1->type > oper2->type)
-		return 1;
-	return 0;
-}
-
-static int insert_qgroup_oper(struct btrfs_fs_info *fs_info,
-			      struct btrfs_qgroup_operation *oper)
+static struct btrfs_qgroup_operation *
+insert_qgroup_oper(struct btrfs_fs_info *fs_info,
+		   struct btrfs_qgroup_operation *oper)
 {
 	struct rb_node **p;
 	struct rb_node *parent = NULL;
 	struct btrfs_qgroup_operation *cur;
 	int cmp;
 
-	spin_lock(&fs_info->qgroup_op_lock);
 	p = &fs_info->qgroup_op_tree.rb_node;
 	while (*p) {
 		parent = *p;
 		cur = rb_entry(parent, struct btrfs_qgroup_operation, n);
-		cmp = comp_oper(cur, oper);
-		if (cmp < 0) {
+		cmp = comp_oper_exist(cur, oper);
+		if (cmp < 0)
 			p = &(*p)->rb_right;
-		} else if (cmp) {
+		else if (cmp)
 			p = &(*p)->rb_left;
-		} else {
-			spin_unlock(&fs_info->qgroup_op_lock);
-			return -EEXIST;
-		}
+		else
+			return cur;
 	}
 	rb_link_node(&oper->n, parent, p);
 	rb_insert_color(&oper->n, &fs_info->qgroup_op_tree);
-	spin_unlock(&fs_info->qgroup_op_lock);
-	return 0;
+	return NULL;
 }
 
 /*
@@ -1321,8 +1296,7 @@ int btrfs_qgroup_record_ref(struct btrfs_trans_handle *trans,
 			    u64 bytenr, u64 num_bytes,
 			    enum btrfs_qgroup_operation_type type, int mod_seq)
 {
-	struct btrfs_qgroup_operation *oper;
-	int ret;
+	struct btrfs_qgroup_operation *oper, *exist;
 
 	if (!is_fstree(ref_root) || !fs_info->quota_enabled)
 		return 0;
@@ -1337,6 +1311,7 @@ int btrfs_qgroup_record_ref(struct btrfs_trans_handle *trans,
 	oper->type = type;
 	oper->seq = atomic_inc_return(&fs_info->qgroup_op_seq);
 	INIT_LIST_HEAD(&oper->elem.list);
+	INIT_LIST_HEAD(&oper->opers);
 	oper->elem.seq = 0;
 
 	trace_btrfs_qgroup_record_ref(oper);
@@ -1357,14 +1332,16 @@ int btrfs_qgroup_record_ref(struct btrfs_trans_handle *trans,
 		}
 	}
 
-	ret = insert_qgroup_oper(fs_info, oper);
-	if (ret) {
-		/* Shouldn't happen so have an assert for developers */
-		ASSERT(0);
-		kfree(oper);
-		return ret;
+	spin_lock(&fs_info->qgroup_op_lock);
+	exist = insert_qgroup_oper(fs_info, oper);
+	if (exist) {
+		oper->head = exist;
+		list_add_tail(&oper->list, &exist->opers);
+	} else {
+		oper->head = oper;
+		list_add_tail(&oper->list, &trans->qgroup_ref_list);
 	}
-	list_add_tail(&oper->list, &trans->qgroup_ref_list);
+	spin_unlock(&fs_info->qgroup_op_lock);
 
 	if (mod_seq)
 		btrfs_get_tree_mod_seq(fs_info, &oper->elem);
@@ -1553,32 +1530,33 @@ static int qgroup_account_deleted_refs(struct btrfs_fs_info *fs_info,
 	struct ulist_iterator uiter;
 	struct btrfs_qgroup *qg;
 	struct btrfs_qgroup_operation *tmp_oper;
-	struct rb_node *n;
 	int ret;
+	bool found = (oper == oper->head);
 
 	ulist_reinit(tmp);
 
-	/*
-	 * We only walk forward in the tree since we're only interested in
-	 * removals that happened _after_  our operation.
-	 */
-	spin_lock(&fs_info->qgroup_op_lock);
-	n = rb_next(&oper->n);
-	spin_unlock(&fs_info->qgroup_op_lock);
-	if (!n)
-		return 0;
-	tmp_oper = rb_entry(n, struct btrfs_qgroup_operation, n);
-	while (tmp_oper->bytenr == oper->bytenr) {
+	list_for_each_entry(tmp_oper, &oper->head->opers, list) {
+		/*
+		 * We only care about operations that happened after our current
+		 * operation.
+		 */
+		if (tmp_oper == oper) {
+			found = true;
+			continue;
+		}
+		if (!found)
+			continue;
+
 		/*
 		 * If it's not a removal we don't care, additions work out
 		 * properly with our refcnt tracking.
 		 */
 		if (tmp_oper->type != BTRFS_QGROUP_OPER_SUB_SHARED &&
 		    tmp_oper->type != BTRFS_QGROUP_OPER_SUB_EXCL)
-			goto next;
+			continue;
 		qg = find_qgroup_rb(fs_info, tmp_oper->ref_root);
 		if (!qg)
-			goto next;
+			continue;
 		ret = ulist_add(qgroups, qg->qgroupid, ptr_to_u64(qg),
 				GFP_ATOMIC);
 		if (ret) {
@@ -1600,13 +1578,6 @@ static int qgroup_account_deleted_refs(struct btrfs_fs_info *fs_info,
 			if (ret < 0)
 				return ret;
 		}
-next:
-		spin_lock(&fs_info->qgroup_op_lock);
-		n = rb_next(&tmp_oper->n);
-		spin_unlock(&fs_info->qgroup_op_lock);
-		if (!n)
-			break;
-		tmp_oper = rb_entry(n, struct btrfs_qgroup_operation, n);
 	}
 
 	/* Ok now process the qgroups we found */
@@ -1840,12 +1811,12 @@ static int check_existing_refs(struct btrfs_trans_handle *trans,
  */
 static int qgroup_shared_accounting(struct btrfs_trans_handle *trans,
 				    struct btrfs_fs_info *fs_info,
-				    struct btrfs_qgroup_operation *oper)
+				    struct btrfs_qgroup_operation *oper,
+				    u64 backref_seq)
 {
 	struct ulist *roots = NULL;
 	struct ulist *qgroups, *tmp;
 	struct btrfs_qgroup *qgroup;
-	struct seq_list elem = {};
 	u64 seq;
 	int old_roots = 0;
 	int new_roots = 0;
@@ -1869,10 +1840,8 @@ static int qgroup_shared_accounting(struct btrfs_trans_handle *trans,
 		return -ENOMEM;
 	}
 
-	btrfs_get_tree_mod_seq(fs_info, &elem);
-	ret = btrfs_find_all_roots(trans, fs_info, oper->bytenr, elem.seq,
+	ret = btrfs_find_all_roots(trans, fs_info, oper->bytenr, backref_seq,
 				   &roots);
-	btrfs_put_tree_mod_seq(fs_info, &elem);
 	if (ret < 0) {
 		ulist_free(qgroups);
 		ulist_free(tmp);
@@ -1956,7 +1925,8 @@ out:
  */
 static int qgroup_subtree_accounting(struct btrfs_trans_handle *trans,
 				     struct btrfs_fs_info *fs_info,
-				     struct btrfs_qgroup_operation *oper)
+				     struct btrfs_qgroup_operation *oper,
+				     u64 backref_seq)
 {
 	struct ulist *roots = NULL;
 	struct ulist_node *unode;
@@ -1967,16 +1937,13 @@ static int qgroup_subtree_accounting(struct btrfs_trans_handle *trans,
 	int err;
 	struct btrfs_qgroup *qg;
 	u64 root_obj = 0;
-	struct seq_list elem = {};
 
 	parents = ulist_alloc(GFP_NOFS);
 	if (!parents)
 		return -ENOMEM;
 
-	btrfs_get_tree_mod_seq(fs_info, &elem);
 	ret = btrfs_find_all_roots(trans, fs_info, oper->bytenr,
-				   elem.seq, &roots);
-	btrfs_put_tree_mod_seq(fs_info, &elem);
+				   backref_seq, &roots);
 	if (ret < 0)
 		goto out;
 
@@ -2062,7 +2029,7 @@ out:
  */
 static int btrfs_qgroup_account(struct btrfs_trans_handle *trans,
 				struct btrfs_fs_info *fs_info,
-				struct btrfs_qgroup_operation *oper)
+				struct btrfs_qgroup_operation *oper, u64 seq)
 {
 	int ret = 0;
 
@@ -2091,15 +2058,58 @@ static int btrfs_qgroup_account(struct btrfs_trans_handle *trans,
 		break;
 	case BTRFS_QGROUP_OPER_ADD_SHARED:
 	case BTRFS_QGROUP_OPER_SUB_SHARED:
-		ret = qgroup_shared_accounting(trans, fs_info, oper);
+		ret = qgroup_shared_accounting(trans, fs_info, oper, seq);
 		break;
 	case BTRFS_QGROUP_OPER_SUB_SUBTREE:
-		ret = qgroup_subtree_accounting(trans, fs_info, oper);
+		ret = qgroup_subtree_accounting(trans, fs_info, oper, seq);
 		break;
 	default:
 		ASSERT(0);
 	}
 	return ret;
+}
+
+static void btrfs_barrier_delayed_refs(struct btrfs_trans_handle *trans,
+				       u64 bytenr)
+{
+	struct btrfs_delayed_ref_head *head;
+	struct btrfs_delayed_ref_root *delayed_refs;
+
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+	if (unlikely(trans->type == __TRANS_DUMMY))
+		return;
+#endif
+	delayed_refs = &trans->transaction->delayed_refs;
+	spin_lock(&delayed_refs->lock);
+	head = btrfs_find_delayed_ref_head(trans, bytenr);
+
+	/* No head, no problem */
+	if (!head) {
+		spin_unlock(&delayed_refs->lock);
+		return;
+	}
+
+	/*
+	 * If we can't get the mutex we need to wait for the head to finish
+	 * processing whatever delayed refs it has so we can be sure all qgroup
+	 * modifications have been done by the time we go to do real work.
+	 */
+	if (!mutex_trylock(&head->mutex)) {
+		atomic_inc(&head->node.refs);
+		spin_unlock(&delayed_refs->lock);
+
+		mutex_lock(&head->mutex);
+		mutex_unlock(&head->mutex);
+		btrfs_put_delayed_ref(&head->node);
+		return;
+	}
+
+	/*
+	 * We were able to get the mutex, means we weren't processing and we can
+	 * carry on, our tree mod seq will protect us from now on.
+	 */
+	mutex_unlock(&head->mutex);
+	spin_unlock(&delayed_refs->lock);
 }
 
 /*
@@ -2109,18 +2119,53 @@ static int btrfs_qgroup_account(struct btrfs_trans_handle *trans,
 int btrfs_delayed_qgroup_accounting(struct btrfs_trans_handle *trans,
 				    struct btrfs_fs_info *fs_info)
 {
-	struct btrfs_qgroup_operation *oper;
+	struct btrfs_qgroup_operation *oper, *cur;
 	int ret = 0;
 
 	while (!list_empty(&trans->qgroup_ref_list)) {
-		oper = list_first_entry(&trans->qgroup_ref_list,
-					struct btrfs_qgroup_operation, list);
+		struct seq_list elem = {};
+
+		cur = oper = list_first_entry(&trans->qgroup_ref_list,
+					      struct btrfs_qgroup_operation,
+					      list);
 		list_del_init(&oper->list);
-		if (!ret || !trans->aborted)
-			ret = btrfs_qgroup_account(trans, fs_info, oper);
-		spin_lock(&fs_info->qgroup_op_lock);
-		rb_erase(&oper->n, &fs_info->qgroup_op_tree);
-		spin_unlock(&fs_info->qgroup_op_lock);
+		if (!ret || !trans->aborted) {
+			btrfs_get_tree_mod_seq(fs_info, &elem);
+			btrfs_barrier_delayed_refs(trans, oper->bytenr);
+
+			spin_lock(&fs_info->qgroup_op_lock);
+			rb_erase(&oper->n, &fs_info->qgroup_op_tree);
+			spin_unlock(&fs_info->qgroup_op_lock);
+
+
+			/*
+			 * We are now safe to access the oper->opers list on our
+			 * oper if it is indeed filled.  The tree mod seq and
+			 * delayed ref barrier ensures that we will no longer
+			 * have any new qgroup operations recorded for this
+			 * bytenr, so now all we need is a mb to make sure we
+			 * notice any changes to the oper list.
+			 */
+			smp_mb();
+			ret = btrfs_qgroup_account(trans, fs_info, cur,
+						   elem.seq);
+			list_for_each_entry(cur, &oper->opers, list) {
+				if (ret)
+					break;
+				ret = btrfs_qgroup_account(trans, fs_info,
+							   cur, elem.seq);
+			}
+			btrfs_put_tree_mod_seq(fs_info, &elem);
+		}
+
+		while (!list_empty(&oper->opers)) {
+			cur = list_first_entry(&oper->opers,
+					       struct btrfs_qgroup_operation,
+					       list);
+			list_del_init(&cur->list);
+			btrfs_put_tree_mod_seq(fs_info, &cur->elem);
+			kfree(cur);
+		}
 		btrfs_put_tree_mod_seq(fs_info, &oper->elem);
 		kfree(oper);
 	}
