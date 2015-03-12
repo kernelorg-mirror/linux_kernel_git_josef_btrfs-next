@@ -522,10 +522,6 @@ static void normal_map_bio(struct dm_target *ti, struct bio *bio)
 	struct log_writes_c *lc = ti->private;
 
 	bio->bi_bdev = lc->dev->bdev;
-	// FIXME: why would bi_sector ever need to be changed?
-	// if you just copied dm-linear then it is misplaced since there isn't an offset
-	if (bio_sectors(bio))
-		bio->bi_iter.bi_sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
 }
 
 static int log_writes_map(struct dm_target *ti, struct bio *bio)
@@ -609,10 +605,11 @@ static int log_writes_map(struct dm_target *ti, struct bio *bio)
 	 * We will write this bio somewhere else way later so we need to copy
 	 * the actual contents into new pages so we know the data will always be
 	 * there.
+	 *
+	 * We do this because this could be a bio from O_DIRECT in which case we
+	 * can't just hold onto the page until some later point, we have to
+	 * manually copy the contents.
 	 */
-	// FIXME: why not just hold onto the original bio until "way later"?
-	// would doing so compromise the target's function?
-	// seems it'd avoid all this duplication (of state and data) in pending_block
 	bio_for_each_segment(bv, bio, iter) {
 		struct page *page;
 		void *src, *dst;
