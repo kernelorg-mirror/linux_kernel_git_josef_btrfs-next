@@ -486,7 +486,7 @@ add_delayed_ref_head(struct btrfs_fs_info *fs_info,
 		qexisting = btrfs_qgroup_insert_dirty_extent(delayed_refs,
 							     qrecord);
 		if (qexisting)
-			kfree(qrecord);
+			btrfs_qgroup_free_extent_record(qrecord);
 	}
 
 	spin_lock_init(&head_ref->lock);
@@ -654,7 +654,7 @@ int btrfs_add_delayed_tree_ref(struct btrfs_fs_info *fs_info,
 		goto free_ref;
 
 	if (fs_info->quota_enabled && is_fstree(ref_root)) {
-		record = kmalloc(sizeof(*record), GFP_NOFS);
+		record = btrfs_qgroup_alloc_extent_record();
 		if (!record)
 			goto free_head_ref;
 	}

@@ -1452,6 +1452,17 @@ int btrfs_qgroup_prepare_account_extents(struct btrfs_trans_handle *trans,
 	return ret;
 }
 
+struct btrfs_qgroup_extent_record *btrfs_qgroup_alloc_extent_record(void)
+{
+	return kmalloc(sizeof(struct btrfs_qgroup_extent_record), GFP_NOFS);
+}
+
+void btrfs_qgroup_free_extent_record(struct btrfs_qgroup_extent_record *record)
+{
+	if (record)
+		kfree(record);
+}
+
 struct btrfs_qgroup_extent_record
 *btrfs_qgroup_insert_dirty_extent(struct btrfs_delayed_ref_root *delayed_refs,
 				  struct btrfs_qgroup_extent_record *record)
