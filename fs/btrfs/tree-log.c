@@ -2856,8 +2856,11 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		blk_finish_plug(&plug);
 		ret = btrfs_wait_marked_extents(log, &log->dirty_log_pages,
 						mark);
-		btrfs_wait_logged_extents(trans, log, log_transid);
+		if (!ret)
+			ret = btrfs_wait_logged_extents(trans, log,
+						  log_transid);
 		if (ret) {
+			btrfs_free_logged_extents(log, log_transid);
 			btrfs_set_log_full_commit(root->fs_info, trans);
 			ctx->io_err = ret;
 		}
@@ -2913,7 +2916,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		mutex_unlock(&log_root_tree->log_mutex);
 		goto out_wake_log_root;
 	}
-	btrfs_wait_logged_extents(trans, log, log_transid);
+	ret = btrfs_wait_logged_extents(trans, log, log_transid);
 
 	btrfs_set_super_log_root(root->fs_info->super_for_commit,
 				log_root_tree->node->start);
@@ -3879,12 +3882,10 @@ static int extent_cmp(void *priv, struct list_head *a, struct list_head *b)
 	return 0;
 }
 
-static int wait_ordered_extents(struct btrfs_trans_handle *trans,
-				struct inode *inode,
-				struct btrfs_root *root,
-				const struct extent_map *em,
-				const struct list_head *logged_list,
-				bool *ordered_io_error)
+static int log_csums(struct btrfs_trans_handle *trans, struct inode *inode,
+		     struct btrfs_root *root, const struct extent_map *em,
+		     const struct list_head *logged_list,
+		     bool *ordered_io_error)
 {
 	struct btrfs_ordered_extent *ordered;
 	struct btrfs_root *log = root->log_root;
@@ -3916,20 +3917,6 @@ static int wait_ordered_extents(struct btrfs_trans_handle *trans,
 		if (ordered->file_offset + ordered->len <= mod_start ||
 		    mod_start + mod_len <= ordered->file_offset)
 			continue;
-
-		if (!test_bit(BTRFS_ORDERED_IO_DONE, &ordered->flags) &&
-		    !test_bit(BTRFS_ORDERED_IOERR, &ordered->flags) &&
-		    !test_bit(BTRFS_ORDERED_DIRECT, &ordered->flags)) {
-			const u64 start = ordered->file_offset;
-			const u64 end = ordered->file_offset + ordered->len - 1;
-
-			WARN_ON(ordered->inode != inode);
-			filemap_fdatawrite_range(inode->i_mapping, start, end);
-		}
-
-		wait_event(ordered->wait,
-			   (test_bit(BTRFS_ORDERED_IO_DONE, &ordered->flags) ||
-			    test_bit(BTRFS_ORDERED_IOERR, &ordered->flags)));
 
 		if (test_bit(BTRFS_ORDERED_IOERR, &ordered->flags)) {
 			/*
@@ -4046,8 +4033,7 @@ static int log_one_extent(struct btrfs_trans_handle *trans,
 	int extent_inserted = 0;
 	bool ordered_io_err = false;
 
-	ret = wait_ordered_extents(trans, inode, root, em, logged_list,
-				   &ordered_io_err);
+	ret = log_csums(trans, inode, root, em, logged_list, &ordered_io_err);
 	if (ret)
 		return ret;
 

@@ -483,11 +483,12 @@ void btrfs_submit_logged_extents(struct list_head *logged_list,
 	spin_unlock_irq(&log->log_extents_lock[index]);
 }
 
-void btrfs_wait_logged_extents(struct btrfs_trans_handle *trans,
-			       struct btrfs_root *log, u64 transid)
+int btrfs_wait_logged_extents(struct btrfs_trans_handle *trans,
+			      struct btrfs_root *log, u64 transid)
 {
 	struct btrfs_ordered_extent *ordered;
 	int index = transid % 2;
+	int ret = 0;
 
 	spin_lock_irq(&log->log_extents_lock[index]);
 	while (!list_empty(&log->logged_list[index])) {
@@ -509,6 +510,9 @@ void btrfs_wait_logged_extents(struct btrfs_trans_handle *trans,
 		wait_event(ordered->wait, test_bit(BTRFS_ORDERED_IO_DONE,
 						   &ordered->flags));
 
+		if (test_bit(BTRFS_ORDERED_IOERR, &ordered->flags))
+			ret = -EIO;
+
 		/*
 		 * If our ordered extent completed it means it updated the
 		 * fs/subvol and csum trees already, so no need to make the
@@ -527,6 +531,7 @@ void btrfs_wait_logged_extents(struct btrfs_trans_handle *trans,
 		spin_lock_irq(&log->log_extents_lock[index]);
 	}
 	spin_unlock_irq(&log->log_extents_lock[index]);
+	return ret;
 }
 
 void btrfs_free_logged_extents(struct btrfs_root *log, u64 transid)
