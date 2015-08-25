@@ -2857,6 +2857,10 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		ret = btrfs_wait_marked_extents(log, &log->dirty_log_pages,
 						mark);
 		btrfs_wait_logged_extents(trans, log, log_transid);
+		if (ret) {
+			btrfs_set_log_full_commit(root->fs_info, trans);
+			ctx->io_err = ret;
+		}
 		wait_log_commit(log_root_tree,
 				root_log_ctx.log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);

@@ -2054,6 +2054,10 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 			if (!ret) {
 				ret = btrfs_end_transaction(trans, root);
 				goto out;
+			} else if (ctx.io_err) {
+				btrfs_end_transaction(trans, root);
+				ret = ctx.io_err;
+				goto out;
 			}
 		}
 		if (!full_sync) {
