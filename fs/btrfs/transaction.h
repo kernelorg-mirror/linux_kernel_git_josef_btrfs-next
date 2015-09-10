@@ -65,6 +65,7 @@ struct btrfs_transaction {
 	struct list_head switch_commits;
 	struct list_head dirty_bgs;
 	struct list_head io_bgs;
+	struct list_head dropped_roots;
 	u64 num_dirty_bgs;
 
 	/*
@@ -74,6 +75,7 @@ struct btrfs_transaction {
 	 */
 	struct mutex cache_write_mutex;
 	spinlock_t dirty_bgs_lock;
+	spinlock_t dropped_roots_lock;
 	struct btrfs_delayed_ref_root delayed_refs;
 	int aborted;
 	int dirty_bg_run;
@@ -215,4 +217,12 @@ int btrfs_transaction_in_commit(struct btrfs_fs_info *info);
 void btrfs_put_transaction(struct btrfs_transaction *transaction);
 void btrfs_apply_pending_changes(struct btrfs_fs_info *fs_info);
 
+static inline void btrfs_add_dropped_root(struct btrfs_trans_handle *trans,
+					  struct btrfs_root *root)
+{
+	struct btrfs_transaction *cur_trans = trans->transaction;
+	spin_lock(&cur_trans->dropped_roots_lock);
+	list_add_tail(&root->root_list, &cur_trans->dropped_roots);
+	spin_unlock(&cur_trans->dropped_roots_lock);
+}
 #endif
