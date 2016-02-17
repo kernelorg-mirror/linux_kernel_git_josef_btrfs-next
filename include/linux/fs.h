@@ -1652,7 +1652,10 @@ struct file_operations {
 	int (*setlease)(struct file *, long, struct file_lock **, void **);
 	long (*fallocate)(struct file *file, int mode, loff_t offset,
 			  loff_t len);
-	void (*show_fdinfo)(struct seq_file *m, struct file *f);
+	void *(*start_fdinfo)(struct seq_file *m, struct file *f, loff_t *pos);
+	void *(*next_fdinfo)(struct seq_file *m, struct file *f, void *v, loff_t *pos);
+	void (*show_fdinfo)(struct seq_file *m, struct file *f, void *v);
+	void (*stop_fdinfo)(struct seq_file *m, struct file *f, void *v);
 #ifndef CONFIG_MMU
 	unsigned (*mmap_capabilities)(struct file *);
 #endif

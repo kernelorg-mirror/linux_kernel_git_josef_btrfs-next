@@ -20,22 +20,6 @@
 
 #if defined(CONFIG_INOTIFY_USER) || defined(CONFIG_FANOTIFY)
 
-static void show_fdinfo(struct seq_file *m, struct file *f,
-			void (*show)(struct seq_file *m,
-				     struct fsnotify_mark *mark))
-{
-	struct fsnotify_group *group = f->private_data;
-	struct fsnotify_mark *mark;
-
-	mutex_lock(&group->mark_mutex);
-	list_for_each_entry(mark, &group->marks_list, g_list) {
-		show(m, mark);
-		if (seq_has_overflowed(m))
-			break;
-	}
-	mutex_unlock(&group->mark_mutex);
-}
-
 #if defined(CONFIG_EXPORTFS)
 static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
 {
@@ -71,10 +55,17 @@ static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
 
 #ifdef CONFIG_INOTIFY_USER
 
-static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
+void inotify_show_fdinfo(struct seq_file *m, struct file *f, void *v)
 {
+	struct fsnotify_group *group = f->private_data;
+	struct list_head *cur = v;
+	struct fsnotify_mark *mark = list_entry(cur, struct fsnotify_mark,
+						g_list);
 	struct inotify_inode_mark *inode_mark;
 	struct inode *inode;
+
+	if (v == &group->marks_list)
+		return;
 
 	if (!(mark->flags & FSNOTIFY_MARK_FLAG_ALIVE) ||
 	    !(mark->flags & FSNOTIFY_MARK_FLAG_INODE))
@@ -97,11 +88,6 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 		seq_putc(m, '\n');
 		iput(inode);
 	}
-}
-
-void inotify_show_fdinfo(struct seq_file *m, struct file *f)
-{
-	show_fdinfo(m, f, inotify_fdinfo);
 }
 
 #endif /* CONFIG_INOTIFY_USER */
@@ -137,10 +123,18 @@ static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 	}
 }
 
-void fanotify_show_fdinfo(struct seq_file *m, struct file *f)
+void fanotify_show_fdinfo(struct seq_file *m, struct file *f, void *v)
 {
 	struct fsnotify_group *group = f->private_data;
 	unsigned int flags = 0;
+
+	if (v != &group->marks_list) {
+		struct list_head *cur = v;
+		struct fsnotify_mark *mark = list_entry(cur,
+							struct fsnotify_mark,
+							g_list);
+		return fanotify_fdinfo(m, mark);
+	}
 
 	switch (group->priority) {
 	case FS_PRIO_0:
@@ -162,11 +156,30 @@ void fanotify_show_fdinfo(struct seq_file *m, struct file *f)
 
 	seq_printf(m, "fanotify flags:%x event-flags:%x\n",
 		   flags, group->fanotify_data.f_flags);
+}
+#endif /* CONFIG_FANOTIFY */
 
-	show_fdinfo(m, f, fanotify_fdinfo);
+void *fsnotify_next_fdinfo(struct seq_file *seq, struct file *f, void *v,
+			   loff_t *pos)
+{
+	struct fsnotify_group *group = f->private_data;
+	return seq_list_next(v, &group->marks_list, pos);
 }
 
-#endif /* CONFIG_FANOTIFY */
+void *fsnotify_start_fdinfo(struct seq_file *seq, struct file *f, loff_t *pos)
+{
+	struct fsnotify_group *group = f->private_data;
+
+	mutex_lock(&group->mark_mutex);
+	return seq_list_start_head(&group->marks_list, *pos);
+}
+
+void fsnotify_stop_fdinfo(struct seq_file *seq, struct file *f, void *v)
+{
+	struct fsnotify_group *group = f->private_data;
+
+	mutex_unlock(&group->mark_mutex);
+}
 
 #endif /* CONFIG_INOTIFY_USER || CONFIG_FANOTIFY */
 

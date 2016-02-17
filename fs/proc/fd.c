@@ -16,14 +16,135 @@
 #include "internal.h"
 #include "fd.h"
 
-static int seq_show(struct seq_file *m, void *v)
+enum proc_fdinfo_states {
+	FDINFO_GENERIC = 0,
+	FDINFO_LOCKS = 1,
+	FDINFO_PRIVATE = 2,
+	FDINFO_DONE = 3,
+};
+
+struct proc_fdinfo_ctx {
+	struct file *file;
+	struct files_struct *files;
+	int f_flags;
+	unsigned state;
+	loff_t ppos;
+};
+
+static int seq_fdinfo_show(struct seq_file *seq, void *v)
+{
+	struct proc_fdinfo_ctx *ctx = seq->private;
+	struct file *file = ctx->file;
+	struct files_struct *files = ctx->files;
+
+	switch (ctx->state) {
+	case FDINFO_GENERIC:
+		seq_printf(seq, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
+			   (long long)file->f_pos, ctx->f_flags,
+			   real_mount(file->f_path.mnt)->mnt_id);
+		return 0;
+	case FDINFO_LOCKS:
+		show_fd_locks(seq, file, files);
+		return 0;
+	case FDINFO_PRIVATE:
+		if (!file->f_op->show_fdinfo)
+			return 1;
+		file->f_op->show_fdinfo(seq, file, v);
+		return 0;
+	default:
+		break;
+	}
+	return 1;
+}
+
+static void *seq_fdinfo_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	struct proc_fdinfo_ctx *ctx = seq->private;
+	struct file *file = ctx->file;
+	switch (ctx->state) {
+	case FDINFO_GENERIC:
+	case FDINFO_LOCKS:
+		ctx->state++;
+		*pos = 0;
+
+		/* We're switching states, we need to make sure the
+		 * ->start_fdinfo stuff is run if it exists.
+		 */
+		if (ctx->state == FDINFO_PRIVATE && file->f_op->start_fdinfo)
+			return file->f_op->start_fdinfo(seq, file, pos);
+		return pos;
+	case FDINFO_PRIVATE:
+		if (!file->f_op->next_fdinfo) {
+			ctx->state++;
+			return NULL;
+		}
+		return file->f_op->next_fdinfo(seq, ctx->file, v, pos);
+	default:
+		break;
+	}
+	return NULL;
+}
+
+static void seq_fdinfo_stop(struct seq_file *seq, void *v)
+{
+	struct proc_fdinfo_ctx *ctx = seq->private;
+	struct file *file = ctx->file;
+
+	if (ctx->state == FDINFO_PRIVATE &&
+	    file->f_op->stop_fdinfo)
+		file->f_op->stop_fdinfo(seq, file, v);
+}
+
+static void *seq_fdinfo_start(struct seq_file *seq, loff_t *pos)
+{
+	struct proc_fdinfo_ctx *ctx = seq->private;
+	struct file *file = ctx->file;
+
+	switch (ctx->state) {
+	case FDINFO_GENERIC:
+	case FDINFO_LOCKS:
+		*pos = 0;
+		return pos;
+	case FDINFO_PRIVATE:
+		if (!file->f_op->show_fdinfo) {
+			ctx->state = FDINFO_DONE;
+			return NULL;
+		}
+		if (file->f_op->start_fdinfo)
+			return file->f_op->start_fdinfo(seq, file, pos);
+		return pos;
+	default:
+		break;
+	}
+	return NULL;
+}
+
+const struct seq_operations proc_fdinfo_seq_operations = {
+	.start	=	seq_fdinfo_start,
+	.stop	=	seq_fdinfo_stop,
+	.next	=	seq_fdinfo_next,
+	.show	=	seq_fdinfo_show,
+};
+
+static int seq_fdinfo_release(struct inode *inode, struct file *file)
+{
+	struct seq_file *seq = file->private_data;
+	struct proc_fdinfo_ctx *ctx = seq->private;
+
+	fput(ctx->file);
+	return seq_release_private(inode, file);
+}
+
+static int seq_fdinfo_open(struct inode *inode, struct file *file)
 {
 	struct files_struct *files = NULL;
 	int f_flags = 0, ret = -ENOENT;
-	struct file *file = NULL;
+	struct file *target_file = NULL;
 	struct task_struct *task;
+	struct seq_file *seq;
+	struct proc_fdinfo_ctx *ctx;
 
-	task = get_proc_task(m->private);
+	task = get_proc_task(inode);
 	if (!task)
 		return -ENOENT;
 
@@ -31,53 +152,46 @@ static int seq_show(struct seq_file *m, void *v)
 	put_task_struct(task);
 
 	if (files) {
-		int fd = proc_fd(m->private);
+		int fd = proc_fd(inode);
 
 		spin_lock(&files->file_lock);
-		file = fcheck_files(files, fd);
-		if (file) {
+		target_file = fcheck_files(files, fd);
+		if (target_file) {
 			struct fdtable *fdt = files_fdtable(files);
 
-			f_flags = file->f_flags;
+			f_flags = target_file->f_flags;
 			if (close_on_exec(fd, fdt))
 				f_flags |= O_CLOEXEC;
 
-			get_file(file);
+			get_file(target_file);
 			ret = 0;
 		}
 		spin_unlock(&files->file_lock);
 		put_files_struct(files);
 	}
-
 	if (ret)
 		return ret;
 
-	seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
-		   (long long)file->f_pos, f_flags,
-		   real_mount(file->f_path.mnt)->mnt_id);
-
-	show_fd_locks(m, file, files);
-	if (seq_has_overflowed(m))
-		goto out;
-
-	if (file->f_op->show_fdinfo)
-		file->f_op->show_fdinfo(m, file);
-
-out:
-	fput(file);
+	ret = seq_open_private(file, &proc_fdinfo_seq_operations,
+			       sizeof(*ctx));
+	if (ret) {
+		fput(target_file);
+		return ret;
+	}
+	seq = file->private_data;
+	ctx = seq->private;
+	ctx->file = target_file;
+	ctx->files = files;
+	ctx->f_flags = f_flags;
+	ctx->state = FDINFO_GENERIC;
 	return 0;
-}
-
-static int seq_fdinfo_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, seq_show, inode);
 }
 
 static const struct file_operations proc_fdinfo_file_operations = {
 	.open		= seq_fdinfo_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
-	.release	= single_release,
+	.release	= seq_fdinfo_release,
 };
 
 static int tid_fd_revalidate(struct dentry *dentry, unsigned int flags)

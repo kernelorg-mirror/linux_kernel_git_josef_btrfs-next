@@ -1191,7 +1191,7 @@ static long userfaultfd_ioctl(struct file *file, unsigned cmd,
 }
 
 #ifdef CONFIG_PROC_FS
-static void userfaultfd_show_fdinfo(struct seq_file *m, struct file *f)
+static void userfaultfd_show_fdinfo(struct seq_file *m, struct file *f, void *v)
 {
 	struct userfaultfd_ctx *ctx = f->private_data;
 	wait_queue_t *wq;

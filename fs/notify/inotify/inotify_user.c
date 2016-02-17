@@ -316,6 +316,9 @@ static long inotify_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations inotify_fops = {
 	.show_fdinfo	= inotify_show_fdinfo,
+	.next_fdinfo	= fsnotify_next_fdinfo,
+	.stop_fdinfo	= fsnotify_stop_fdinfo,
+	.start_fdinfo	= fsnotify_start_fdinfo,
 	.poll		= inotify_poll,
 	.read		= inotify_read,
 	.fasync		= fsnotify_fasync,

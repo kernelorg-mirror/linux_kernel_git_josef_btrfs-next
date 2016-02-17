@@ -420,6 +420,9 @@ static long fanotify_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 }
 
 static const struct file_operations fanotify_fops = {
+	.start_fdinfo	= fsnotify_start_fdinfo,
+	.next_fdinfo	= fsnotify_next_fdinfo,
+	.stop_fdinfo	= fsnotify_stop_fdinfo,
 	.show_fdinfo	= fanotify_show_fdinfo,
 	.poll		= fanotify_poll,
 	.read		= fanotify_read,

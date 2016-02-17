@@ -875,7 +875,7 @@ static unsigned int ep_eventpoll_poll(struct file *file, poll_table *wait)
 }
 
 #ifdef CONFIG_PROC_FS
-static void ep_show_fdinfo(struct seq_file *m, struct file *f)
+static void ep_show_fdinfo(struct seq_file *m, struct file *f, void *v)
 {
 	struct eventpoll *ep = f->private_data;
 	struct rb_node *rbp;

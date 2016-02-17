@@ -114,7 +114,7 @@ static int bpf_map_release(struct inode *inode, struct file *filp)
 }
 
 #ifdef CONFIG_PROC_FS
-static void bpf_map_show_fdinfo(struct seq_file *m, struct file *filp)
+static void bpf_map_show_fdinfo(struct seq_file *m, struct file *filp, void *v)
 {
 	const struct bpf_map *map = filp->private_data;
 
