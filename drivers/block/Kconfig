@@ -300,6 +300,17 @@ config BLK_DEV_NBD
 
 	  If unsure, say N.
 
+config BLK_NBD_SRV
+	tristate "Network block device server support"
+	depends on NET
+	---help---
+	  Saying Y here will enable the in kernel NBD server.  This can be used
+	  in conjunction with the NBD client.  This still requires the user
+	  space NBD server to handle the advertisement of the exports and
+	  handle the negotiation of incoming connections.
+
+	  If unsure, say N.
+
 config BLK_DEV_SKD
 	tristate "STEC S1120 Block Driver"
 	depends on PCI

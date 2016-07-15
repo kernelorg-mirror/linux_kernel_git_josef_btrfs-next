@@ -29,6 +29,18 @@
 #define NBD_SET_TIMEOUT _IO( 0xab, 9 )
 #define NBD_SET_FLAGS   _IO( 0xab, 10)
 
+#define NBD_DEVNAME_MAX 1024
+
+struct nbd_server_args {
+	__u64 sockfd;
+	__u64 flags;
+	char devname[NBD_DEVNAME_MAX];
+	__u64 unused[12];
+};
+
+#define NBD_SERVER_CTL_ADD		_IOW( 0xa4, 0, struct nbd_server_args )
+#define NBD_SERVER_CTL_DISCONNECT_ALL	_IO( 0xa4, 1 )
+
 enum {
 	NBD_CMD_READ = 0,
 	NBD_CMD_WRITE = 1,
@@ -36,6 +48,10 @@ enum {
 	NBD_CMD_FLUSH = 3,
 	NBD_CMD_TRIM = 4
 };
+
+#define NBD_CMD_MASK_COMMAND 0x0000ffff
+#define NBD_CMD_SHIFT (16)
+#define NBD_CMD_FLAG_FUA ((1 << 0) << NBD_CMD_SHIFT)
 
 /* values for flags field */
 #define NBD_FLAG_HAS_FLAGS    (1 << 0) /* nbd-server supports flags */
