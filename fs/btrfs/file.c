@@ -1779,7 +1779,8 @@ again:
 
 		cond_resched();
 
-		balance_dirty_pages_ratelimited(inode->i_mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(inode),
+						inode->i_sb);
 		if (dirty_pages < (fs_info->nodesize >> PAGE_SHIFT) + 1)
 			btrfs_btree_balance_dirty(fs_info);
 

@@ -228,8 +228,9 @@ void wb_blkcg_offline(struct blkcg *blkcg);
 int inode_congested(struct inode *inode, int cong_bits);
 
 /**
- * inode_cgwb_enabled - test whether cgroup writeback is enabled on an inode
- * @inode: inode of interest
+ * bdi_cgwb_enabled - test wether cgroup writeback is enabled on a filesystem
+ * @bdi: the bdi we care about
+ * @sb: the super for the bdi
  *
  * cgroup writeback requires support from both the bdi and filesystem.
  * Also, both memcg and iocg have to be on the default hierarchy.  Test
@@ -238,15 +239,25 @@ int inode_congested(struct inode *inode, int cong_bits);
  * Note that the test result may change dynamically on the same inode
  * depending on how memcg and iocg are configured.
  */
-static inline bool inode_cgwb_enabled(struct inode *inode)
+static inline bool bdi_cgwb_enabled(struct backing_dev_info *bdi,
+				    struct super_block *sb)
 {
-	struct backing_dev_info *bdi = inode_to_bdi(inode);
-
 	return cgroup_subsys_on_dfl(memory_cgrp_subsys) &&
 		cgroup_subsys_on_dfl(io_cgrp_subsys) &&
 		bdi_cap_account_dirty(bdi) &&
 		(bdi->capabilities & BDI_CAP_CGROUP_WRITEBACK) &&
-		(inode->i_sb->s_iflags & SB_I_CGROUPWB);
+		(sb->s_iflags & SB_I_CGROUPWB);
+}
+
+/**
+ * inode_cgwb_enabled - test whether cgroup writeback is enabled on an inode
+ * @inode: inode of interest
+ *
+ * Does the inode have cgroup writeback support.
+ */
+static inline bool inode_cgwb_enabled(struct inode *inode)
+{
+	return bdi_cgwb_enabled(inode_to_bdi(inode), inode->i_sb);
 }
 
 /**
@@ -388,6 +399,12 @@ static inline void unlocked_inode_to_wb_end(struct inode *inode, bool locked)
 }
 
 #else	/* CONFIG_CGROUP_WRITEBACK */
+
+static inline bool bdi_cgwb_enabled(struct backing_dev_info *bdi,
+				    struct super_block *sb)
+{
+	return false;
+}
 
 static inline bool inode_cgwb_enabled(struct inode *inode)
 {

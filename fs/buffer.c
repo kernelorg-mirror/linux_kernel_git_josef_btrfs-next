@@ -2421,7 +2421,8 @@ static int cont_expand_zero(struct file *file, struct address_space *mapping,
 		BUG_ON(err != len);
 		err = 0;
 
-		balance_dirty_pages_ratelimited(mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(inode),
+						inode->i_sb);
 
 		if (unlikely(fatal_signal_pending(current))) {
 			err = -EINTR;

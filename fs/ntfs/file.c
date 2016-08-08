@@ -276,7 +276,7 @@ do_non_resident_extend:
 		 * number of pages we read and make dirty in the case of sparse
 		 * files.
 		 */
-		balance_dirty_pages_ratelimited(mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(vi), vi->i_sb);
 		cond_resched();
 	} while (++index < end_index);
 	read_lock_irqsave(&ni->size_lock, flags);
@@ -1913,7 +1913,7 @@ again:
 		iov_iter_advance(i, copied);
 		pos += copied;
 		written += copied;
-		balance_dirty_pages_ratelimited(mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(vi), vi->i_sb);
 		if (fatal_signal_pending(current)) {
 			status = -EINTR;
 			break;
