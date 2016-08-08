@@ -25,6 +25,7 @@
 #include <linux/slab.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
+#include <linux/backing-dev.h>
 
 #include "attrib.h"
 #include "debug.h"
@@ -2493,6 +2494,7 @@ conv_err_out:
 int ntfs_attr_set(ntfs_inode *ni, const s64 ofs, const s64 cnt, const u8 val)
 {
 	ntfs_volume *vol = ni->vol;
+	struct inode *inode = VFS_I(ni);
 	struct address_space *mapping;
 	struct page *page;
 	u8 *kaddr;
@@ -2545,7 +2547,8 @@ int ntfs_attr_set(ntfs_inode *ni, const s64 ofs, const s64 cnt, const u8 val)
 		kunmap_atomic(kaddr);
 		set_page_dirty(page);
 		put_page(page);
-		balance_dirty_pages_ratelimited(mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(inode),
+						inode->i_sb);
 		cond_resched();
 		if (idx == end)
 			goto done;
@@ -2586,7 +2589,8 @@ int ntfs_attr_set(ntfs_inode *ni, const s64 ofs, const s64 cnt, const u8 val)
 		/* Finally unlock and release the page. */
 		unlock_page(page);
 		put_page(page);
-		balance_dirty_pages_ratelimited(mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(inode),
+						inode->i_sb);
 		cond_resched();
 	}
 	/* If there is a last partial page, need to do it the slow way. */
@@ -2603,7 +2607,8 @@ int ntfs_attr_set(ntfs_inode *ni, const s64 ofs, const s64 cnt, const u8 val)
 		kunmap_atomic(kaddr);
 		set_page_dirty(page);
 		put_page(page);
-		balance_dirty_pages_ratelimited(mapping);
+		balance_dirty_pages_ratelimited(inode_to_bdi(inode),
+						inode->i_sb);
 		cond_resched();
 	}
 done:

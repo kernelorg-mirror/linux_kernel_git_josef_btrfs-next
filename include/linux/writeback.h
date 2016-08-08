@@ -376,7 +376,9 @@ void global_dirty_limits(unsigned long *pbackground, unsigned long *pdirty);
 unsigned long wb_calc_thresh(struct bdi_writeback *wb, unsigned long thresh);
 
 void wb_update_bandwidth(struct bdi_writeback *wb, unsigned long start_time);
-void balance_dirty_pages_ratelimited(struct address_space *mapping);
+void page_writeback_init(void);
+void balance_dirty_pages_ratelimited(struct backing_dev_info *bdi,
+				     struct super_block *sb);
 bool wb_over_bg_thresh(struct bdi_writeback *wb);
 
 typedef int (*writepage_t)(struct page *page, struct writeback_control *wbc,
