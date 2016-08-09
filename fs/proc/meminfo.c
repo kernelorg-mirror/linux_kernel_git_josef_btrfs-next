@@ -98,6 +98,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "SwapFree:       ", i.freeswap);
 	show_val_kb(m, "Dirty:          ",
 		    global_node_page_state(NR_FILE_DIRTY));
+	seq_printf(m, "MetadataDirty:  %8lu kB\n",
+		   global_node_page_state(NR_METADATA_DIRTY));
 	show_val_kb(m, "Writeback:      ",
 		    global_node_page_state(NR_WRITEBACK));
 	show_val_kb(m, "AnonPages:      ",
