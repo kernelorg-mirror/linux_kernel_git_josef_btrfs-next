@@ -241,7 +241,6 @@ static inline u64 btrfs_ino(const struct btrfs_inode *inode)
 	u64 ino = inode->location.objectid;
 
 	/*
-	 * !ino: btree_inode
 	 * type == BTRFS_ROOT_ITEM_KEY: subvol dir
 	 */
 	if (!ino || inode->location.type == BTRFS_ROOT_ITEM_KEY)

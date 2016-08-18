@@ -102,6 +102,7 @@ static void print_extent_item(struct extent_buffer *eb, int slot, int type)
 	ptr = (unsigned long)iref;
 	end = (unsigned long)ei + item_size;
 	while (ptr < end) {
+		struct btrfs_fs_info *fs_info = eb->eb_info->fs_info;
 		iref = (struct btrfs_extent_inline_ref *)ptr;
 		type = btrfs_extent_inline_ref_type(eb, iref);
 		offset = btrfs_extent_inline_ref_offset(eb, iref);
@@ -116,9 +117,9 @@ static void print_extent_item(struct extent_buffer *eb, int slot, int type)
 			 * offset is supposed to be a tree block which
 			 * must be aligned to nodesize.
 			 */
-			if (!IS_ALIGNED(offset, eb->fs_info->nodesize))
+			if (!IS_ALIGNED(offset, fs_info->nodesize))
 				pr_info("\t\t\t(parent %llu is NOT ALIGNED to nodesize %llu)\n",
-					offset, (unsigned long long)eb->fs_info->nodesize);
+					offset, (unsigned long long)fs_info->nodesize);
 			break;
 		case BTRFS_EXTENT_DATA_REF_KEY:
 			dref = (struct btrfs_extent_data_ref *)(&iref->offset);
@@ -132,9 +133,9 @@ static void print_extent_item(struct extent_buffer *eb, int slot, int type)
 			 * offset is supposed to be a tree block which
 			 * must be aligned to nodesize.
 			 */
-			if (!IS_ALIGNED(offset, eb->fs_info->nodesize))
+			if (!IS_ALIGNED(offset, fs_info->nodesize))
 				pr_info("\t\t\t(parent %llu is NOT ALIGNED to nodesize %llu)\n",
-				     offset, (unsigned long long)eb->fs_info->nodesize);
+				     offset, (unsigned long long)fs_info->nodesize);
 			break;
 		default:
 			pr_cont("(extent %llu has INVALID ref type %d)\n",
@@ -199,7 +200,7 @@ void btrfs_print_leaf(struct extent_buffer *l)
 	if (!l)
 		return;
 
-	fs_info = l->fs_info;
+	fs_info = l->eb_info->fs_info;
 	nr = btrfs_header_nritems(l);
 
 	btrfs_info(fs_info, "leaf %llu total ptrs %d free space %d",
@@ -347,7 +348,7 @@ void btrfs_print_tree(struct extent_buffer *c)
 
 	if (!c)
 		return;
-	fs_info = c->fs_info;
+	fs_info = c->eb_info->fs_info;
 	nr = btrfs_header_nritems(c);
 	level = btrfs_header_level(c);
 	if (level == 0) {

@@ -496,7 +496,7 @@ int verify_dir_item(struct btrfs_fs_info *fs_info,
 bool btrfs_is_name_len_valid(struct extent_buffer *leaf, int slot,
 			     unsigned long start, u16 name_len)
 {
-	struct btrfs_fs_info *fs_info = leaf->fs_info;
+	struct btrfs_fs_info *fs_info = leaf->eb_info->fs_info;
 	struct btrfs_key key;
 	u32 read_start;
 	u32 read_end;
