@@ -293,8 +293,7 @@ loop:
 	INIT_LIST_HEAD(&cur_trans->deleted_bgs);
 	spin_lock_init(&cur_trans->dropped_roots_lock);
 	list_add_tail(&cur_trans->list, &fs_info->trans_list);
-	extent_io_tree_init(&cur_trans->dirty_pages,
-			     fs_info->btree_inode);
+	extent_io_tree_init(&cur_trans->dirty_pages, NULL);
 	fs_info->generation++;
 	cur_trans->transid = fs_info->generation;
 	fs_info->running_transaction = cur_trans;
@@ -944,12 +943,10 @@ int btrfs_write_marked_extents(struct btrfs_fs_info *fs_info,
 {
 	int err = 0;
 	int werr = 0;
-	struct address_space *mapping = fs_info->btree_inode->i_mapping;
 	struct extent_state *cached_state = NULL;
 	u64 start = 0;
 	u64 end;
 
-	atomic_inc(&BTRFS_I(fs_info->btree_inode)->sync_writers);
 	while (!find_first_extent_bit(dirty_pages, start, &start, &end,
 				      mark, &cached_state)) {
 		bool wait_writeback = false;
@@ -975,17 +972,16 @@ int btrfs_write_marked_extents(struct btrfs_fs_info *fs_info,
 			wait_writeback = true;
 		}
 		if (!err)
-			err = filemap_fdatawrite_range(mapping, start, end);
+			err = btree_write_range(fs_info, start, end);
 		if (err)
 			werr = err;
 		else if (wait_writeback)
-			werr = filemap_fdatawait_range(mapping, start, end);
+			werr = btree_wait_range(fs_info, start, end);
 		free_extent_state(cached_state);
 		cached_state = NULL;
 		cond_resched();
 		start = end + 1;
 	}
-	atomic_dec(&BTRFS_I(fs_info->btree_inode)->sync_writers);
 	return werr;
 }
 
@@ -1000,7 +996,6 @@ static int __btrfs_wait_marked_extents(struct btrfs_fs_info *fs_info,
 {
 	int err = 0;
 	int werr = 0;
-	struct address_space *mapping = fs_info->btree_inode->i_mapping;
 	struct extent_state *cached_state = NULL;
 	u64 start = 0;
 	u64 end;
@@ -1021,7 +1016,7 @@ static int __btrfs_wait_marked_extents(struct btrfs_fs_info *fs_info,
 		if (err == -ENOMEM)
 			err = 0;
 		if (!err)
-			err = filemap_fdatawait_range(mapping, start, end);
+			err = btree_wait_range(fs_info, start, end);
 		if (err)
 			werr = err;
 		free_extent_state(cached_state);

@@ -102,15 +102,32 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(u32 nodesize, u32 sectorsize)
 
 	fs_info->nodesize = nodesize;
 	fs_info->sectorsize = sectorsize;
-
-	if (init_srcu_struct(&fs_info->subvol_srcu)) {
+	fs_info->eb_info = kzalloc(sizeof(struct btrfs_eb_info),
+				   GFP_KERNEL);
+	if (!fs_info->eb_info) {
 		kfree(fs_info->fs_devices);
 		kfree(fs_info->super_copy);
 		kfree(fs_info);
 		return NULL;
 	}
 
-	spin_lock_init(&fs_info->buffer_lock);
+	if (btrfs_init_eb_info(fs_info)) {
+		kfree(fs_info->eb_info);
+		kfree(fs_info->fs_devices);
+		kfree(fs_info->super_copy);
+		kfree(fs_info);
+		return NULL;
+	}
+
+	if (init_srcu_struct(&fs_info->subvol_srcu)) {
+		list_lru_destroy(&fs_info->eb_info->lru_list);
+		kfree(fs_info->eb_info);
+		kfree(fs_info->fs_devices);
+		kfree(fs_info->super_copy);
+		kfree(fs_info);
+		return NULL;
+	}
+
 	spin_lock_init(&fs_info->qgroup_lock);
 	spin_lock_init(&fs_info->qgroup_op_lock);
 	spin_lock_init(&fs_info->super_lock);
@@ -126,7 +143,6 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(u32 nodesize, u32 sectorsize)
 	INIT_LIST_HEAD(&fs_info->dirty_qgroups);
 	INIT_LIST_HEAD(&fs_info->dead_roots);
 	INIT_LIST_HEAD(&fs_info->tree_mod_seq_list);
-	INIT_RADIX_TREE(&fs_info->buffer_radix, GFP_ATOMIC);
 	INIT_RADIX_TREE(&fs_info->fs_roots_radix, GFP_ATOMIC);
 	extent_io_tree_init(&fs_info->freed_extents[0], NULL);
 	extent_io_tree_init(&fs_info->freed_extents[1], NULL);
@@ -140,6 +156,7 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(u32 nodesize, u32 sectorsize)
 
 void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 {
+	struct btrfs_eb_info *eb_info;
 	struct radix_tree_iter iter;
 	void **slot;
 
@@ -150,13 +167,14 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 			      &fs_info->fs_state)))
 		return;
 
+	eb_info = fs_info->eb_info;
 	test_mnt->mnt_sb->s_fs_info = NULL;
 
-	spin_lock(&fs_info->buffer_lock);
-	radix_tree_for_each_slot(slot, &fs_info->buffer_radix, &iter, 0) {
+	spin_lock_irq(&eb_info->buffer_lock);
+	radix_tree_for_each_slot(slot, &eb_info->buffer_radix, &iter, 0) {
 		struct extent_buffer *eb;
 
-		eb = radix_tree_deref_slot_protected(slot, &fs_info->buffer_lock);
+		eb = radix_tree_deref_slot_protected(slot, &eb_info->buffer_lock);
 		if (!eb)
 			continue;
 		/* Shouldn't happen but that kind of thinking creates CVE's */
@@ -166,15 +184,17 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 			continue;
 		}
 		slot = radix_tree_iter_resume(slot, &iter);
-		spin_unlock(&fs_info->buffer_lock);
+		spin_unlock_irq(&eb_info->buffer_lock);
 		free_extent_buffer_stale(eb);
-		spin_lock(&fs_info->buffer_lock);
+		spin_lock_irq(&eb_info->buffer_lock);
 	}
-	spin_unlock(&fs_info->buffer_lock);
+	spin_unlock_irq(&eb_info->buffer_lock);
 
 	btrfs_free_qgroup_config(fs_info);
 	btrfs_free_fs_roots(fs_info);
 	cleanup_srcu_struct(&fs_info->subvol_srcu);
+	list_lru_destroy(&eb_info->lru_list);
+	kfree(fs_info->eb_info);
 	kfree(fs_info->super_copy);
 	kfree(fs_info->fs_devices);
 	kfree(fs_info);

@@ -40,6 +40,7 @@
 #include <linux/sizes.h>
 #include <linux/dynamic_debug.h>
 #include <linux/refcount.h>
+#include <linux/list_lru.h>
 #include "extent_io.h"
 #include "extent_map.h"
 #include "async-thread.h"
@@ -701,6 +702,7 @@ struct btrfs_device;
 struct btrfs_fs_devices;
 struct btrfs_balance_control;
 struct btrfs_delayed_root;
+struct btrfs_eb_info;
 
 #define BTRFS_FS_BARRIER			1
 #define BTRFS_FS_CLOSING_START			2
@@ -818,7 +820,7 @@ struct btrfs_fs_info {
 	struct btrfs_super_block *super_copy;
 	struct btrfs_super_block *super_for_commit;
 	struct super_block *sb;
-	struct inode *btree_inode;
+	struct btrfs_eb_info *eb_info;
 	struct mutex tree_log_mutex;
 	struct mutex transaction_kthread_mutex;
 	struct mutex cleaner_mutex;
@@ -1059,10 +1061,6 @@ struct btrfs_fs_info {
 
 	/* readahead works cnt */
 	atomic_t reada_works_cnt;
-
-	/* Extent buffer radix tree */
-	spinlock_t buffer_lock;
-	struct radix_tree_root buffer_radix;
 
 	/* next backup root to be overwritten */
 	int backup_root_index;
@@ -1563,7 +1561,7 @@ static inline void btrfs_set_device_total_bytes(struct extent_buffer *eb,
 {
 	BUILD_BUG_ON(sizeof(u64) !=
 		     sizeof(((struct btrfs_dev_item *)0))->total_bytes);
-	WARN_ON(!IS_ALIGNED(val, eb->fs_info->sectorsize));
+	WARN_ON(!IS_ALIGNED(val, eb->eb_info->fs_info->sectorsize));
 	btrfs_set_64(eb, s, offsetof(struct btrfs_dev_item, total_bytes), val);
 }
 
@@ -2962,6 +2960,10 @@ static inline int btrfs_need_cleaner_sleep(struct btrfs_fs_info *fs_info)
 
 static inline void free_fs_info(struct btrfs_fs_info *fs_info)
 {
+	if (fs_info->eb_info) {
+		list_lru_destroy(&fs_info->eb_info->lru_list);
+		kfree(fs_info->eb_info);
+	}
 	kfree(fs_info->balance_ctl);
 	kfree(fs_info->delayed_root);
 	kfree(fs_info->extent_root);
@@ -3185,9 +3187,6 @@ int btrfs_create_subvol_root(struct btrfs_trans_handle *trans,
 			     struct btrfs_root *new_root,
 			     struct btrfs_root *parent_root,
 			     u64 new_dirid);
-int btrfs_merge_bio_hook(struct page *page, unsigned long offset,
-			 size_t size, struct bio *bio,
-			 unsigned long bio_flags);
 void btrfs_set_range_writeback(void *private_data, u64 start, u64 end);
 int btrfs_page_mkwrite(struct vm_fault *vmf);
 int btrfs_readpage(struct file *file, struct page *page);

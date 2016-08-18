@@ -1198,7 +1198,7 @@ int btrfs_sync_fs(struct super_block *sb, int wait)
 	trace_btrfs_sync_fs(fs_info, wait);
 
 	if (!wait) {
-		filemap_flush(fs_info->btree_inode->i_mapping);
+		btree_flush(fs_info);
 		return 0;
 	}
 
@@ -2284,19 +2284,22 @@ static int btrfs_show_devname(struct seq_file *m, struct dentry *root)
 }
 
 static const struct super_operations btrfs_super_ops = {
-	.drop_inode	= btrfs_drop_inode,
-	.evict_inode	= btrfs_evict_inode,
-	.put_super	= btrfs_put_super,
-	.sync_fs	= btrfs_sync_fs,
-	.show_options	= btrfs_show_options,
-	.show_devname	= btrfs_show_devname,
-	.write_inode	= btrfs_write_inode,
-	.alloc_inode	= btrfs_alloc_inode,
-	.destroy_inode	= btrfs_destroy_inode,
-	.statfs		= btrfs_statfs,
-	.remount_fs	= btrfs_remount,
-	.freeze_fs	= btrfs_freeze,
-	.unfreeze_fs	= btrfs_unfreeze,
+	.drop_inode		= btrfs_drop_inode,
+	.evict_inode		= btrfs_evict_inode,
+	.put_super		= btrfs_put_super,
+	.sync_fs		= btrfs_sync_fs,
+	.show_options		= btrfs_show_options,
+	.show_devname		= btrfs_show_devname,
+	.write_inode		= btrfs_write_inode,
+	.alloc_inode		= btrfs_alloc_inode,
+	.destroy_inode		= btrfs_destroy_inode,
+	.statfs			= btrfs_statfs,
+	.remount_fs		= btrfs_remount,
+	.freeze_fs		= btrfs_freeze,
+	.unfreeze_fs		= btrfs_unfreeze,
+	.nr_cached_objects	= btrfs_nr_ebs,
+	.free_cached_objects	= btrfs_free_ebs,
+	.write_metadata		= btrfs_write_ebs,
 };
 
 static const struct file_operations btrfs_ctl_fops = {

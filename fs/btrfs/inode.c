@@ -1877,9 +1877,9 @@ static void btrfs_clear_bit_hook(void *private_data,
  * return 0 if page can be merged to bio
  * return error otherwise
  */
-int btrfs_merge_bio_hook(struct page *page, unsigned long offset,
-			 size_t size, struct bio *bio,
-			 unsigned long bio_flags)
+static int btrfs_merge_bio_hook(struct page *page, unsigned long offset,
+				size_t size, struct bio *bio,
+				unsigned long bio_flags)
 {
 	struct inode *inode = page->mapping->host;
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);

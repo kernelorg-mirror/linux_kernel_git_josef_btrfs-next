@@ -1361,7 +1361,8 @@ tree_mod_log_rewind(struct btrfs_fs_info *fs_info, struct btrfs_path *path,
 
 	if (tm->op == MOD_LOG_KEY_REMOVE_WHILE_FREEING) {
 		BUG_ON(tm->slot != 0);
-		eb_rewin = alloc_dummy_extent_buffer(fs_info, eb->start);
+		eb_rewin = alloc_dummy_extent_buffer(fs_info->eb_info,
+						     eb->start, eb->len);
 		if (!eb_rewin) {
 			btrfs_tree_read_unlock_blocking(eb);
 			free_extent_buffer(eb);
@@ -1444,7 +1445,8 @@ get_old_root(struct btrfs_root *root, u64 time_seq)
 	} else if (old_root) {
 		btrfs_tree_read_unlock(eb_root);
 		free_extent_buffer(eb_root);
-		eb = alloc_dummy_extent_buffer(fs_info, logical);
+		eb = alloc_dummy_extent_buffer(root->fs_info->eb_info, logical,
+					       root->fs_info->nodesize);
 	} else {
 		btrfs_set_lock_blocking_rw(eb_root, BTRFS_READ_LOCK);
 		eb = btrfs_clone_extent_buffer(eb_root);
@@ -1675,7 +1677,7 @@ int btrfs_realloc_node(struct btrfs_trans_handle *trans,
 			continue;
 		}
 
-		cur = find_extent_buffer(fs_info, blocknr);
+		cur = find_extent_buffer(fs_info->eb_info, blocknr);
 		if (cur)
 			uptodate = btrfs_buffer_uptodate(cur, gen, 0);
 		else
@@ -1748,7 +1750,7 @@ static noinline int generic_bin_search(struct extent_buffer *eb,
 	int err;
 
 	if (low > high) {
-		btrfs_err(eb->fs_info,
+		btrfs_err(eb->eb_info->fs_info,
 		 "%s: low (%d) > high (%d) eb %llu owner %llu level %d",
 			  __func__, low, high, eb->start,
 			  btrfs_header_owner(eb), btrfs_header_level(eb));
@@ -2260,7 +2262,7 @@ static void reada_for_search(struct btrfs_fs_info *fs_info,
 
 	search = btrfs_node_blockptr(node, slot);
 	blocksize = fs_info->nodesize;
-	eb = find_extent_buffer(fs_info, search);
+	eb = find_extent_buffer(fs_info->eb_info, search);
 	if (eb) {
 		free_extent_buffer(eb);
 		return;
@@ -2319,7 +2321,7 @@ static noinline void reada_for_balance(struct btrfs_fs_info *fs_info,
 	if (slot > 0) {
 		block1 = btrfs_node_blockptr(parent, slot - 1);
 		gen = btrfs_node_ptr_generation(parent, slot - 1);
-		eb = find_extent_buffer(fs_info, block1);
+		eb = find_extent_buffer(fs_info->eb_info, block1);
 		/*
 		 * if we get -eagain from btrfs_buffer_uptodate, we
 		 * don't want to return eagain here.  That will loop
@@ -2332,7 +2334,7 @@ static noinline void reada_for_balance(struct btrfs_fs_info *fs_info,
 	if (slot + 1 < nritems) {
 		block2 = btrfs_node_blockptr(parent, slot + 1);
 		gen = btrfs_node_ptr_generation(parent, slot + 1);
-		eb = find_extent_buffer(fs_info, block2);
+		eb = find_extent_buffer(fs_info->eb_info, block2);
 		if (eb && btrfs_buffer_uptodate(eb, gen, 1) != 0)
 			block2 = 0;
 		free_extent_buffer(eb);
@@ -2450,7 +2452,7 @@ read_block_for_search(struct btrfs_root *root, struct btrfs_path *p,
 	blocknr = btrfs_node_blockptr(b, slot);
 	gen = btrfs_node_ptr_generation(b, slot);
 
-	tmp = find_extent_buffer(fs_info, blocknr);
+	tmp = find_extent_buffer(fs_info->eb_info, blocknr);
 	if (tmp) {
 		/* first we do an atomic uptodate check */
 		if (btrfs_buffer_uptodate(tmp, gen, 1) > 0) {

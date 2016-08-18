@@ -1158,28 +1158,30 @@ int btrfs_get_extent_inline_ref_type(const struct extent_buffer *eb,
 			if (type == BTRFS_TREE_BLOCK_REF_KEY)
 				return type;
 			if (type == BTRFS_SHARED_BLOCK_REF_KEY) {
-				ASSERT(eb->fs_info);
+				ASSERT(eb->eb_info);
 				/*
 				 * Every shared one has parent tree
 				 * block, which must be aligned to
 				 * nodesize.
 				 */
 				if (offset &&
-				    IS_ALIGNED(offset, eb->fs_info->nodesize))
+				    IS_ALIGNED(offset,
+					       eb->eb_info->fs_info->nodesize))
 					return type;
 			}
 		} else if (is_data == BTRFS_REF_TYPE_DATA) {
 			if (type == BTRFS_EXTENT_DATA_REF_KEY)
 				return type;
 			if (type == BTRFS_SHARED_DATA_REF_KEY) {
-				ASSERT(eb->fs_info);
+				ASSERT(eb->eb_info->fs_info);
 				/*
 				 * Every shared one has parent tree
 				 * block, which must be aligned to
 				 * nodesize.
 				 */
 				if (offset &&
-				    IS_ALIGNED(offset, eb->fs_info->nodesize))
+				    IS_ALIGNED(offset,
+					       eb->eb_info->fs_info->nodesize))
 					return type;
 			}
 		} else {
@@ -1189,7 +1191,7 @@ int btrfs_get_extent_inline_ref_type(const struct extent_buffer *eb,
 	}
 
 	btrfs_print_leaf((struct extent_buffer *)eb);
-	btrfs_err(eb->fs_info, "eb %llu invalid extent inline ref type %d",
+	btrfs_err(eb->eb_info->fs_info, "eb %llu invalid extent inline ref type %d",
 		  eb->start, type);
 	WARN_ON(1);
 
@@ -8731,7 +8733,7 @@ static noinline int do_walk_down(struct btrfs_trans_handle *trans,
 	bytenr = btrfs_node_blockptr(path->nodes[level], path->slots[level]);
 	blocksize = fs_info->nodesize;
 
-	next = find_extent_buffer(fs_info, bytenr);
+	next = find_extent_buffer(fs_info->eb_info, bytenr);
 	if (!next) {
 		next = btrfs_find_create_tree_block(fs_info, bytenr);
 		if (IS_ERR(next))
