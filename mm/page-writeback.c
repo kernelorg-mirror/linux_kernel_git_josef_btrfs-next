@@ -597,11 +597,11 @@ static void wb_domain_writeout_inc(struct wb_domain *dom,
  * Increment @wb's writeout completion count and the global writeout
  * completion count. Called from test_clear_page_writeback().
  */
-static inline void __wb_writeout_inc(struct bdi_writeback *wb)
+static inline void __wb_writeout_add(struct bdi_writeback *wb, long bytes)
 {
 	struct wb_domain *cgdom;
 
-	inc_wb_stat(wb, WB_WRITTEN);
+	__add_wb_stat(wb, WB_WRITTEN_BYTES, bytes);
 	wb_domain_writeout_inc(&global_wb_domain, &wb->completions,
 			       wb->bdi->max_prop_frac);
 
@@ -611,15 +611,15 @@ static inline void __wb_writeout_inc(struct bdi_writeback *wb)
 				       wb->bdi->max_prop_frac);
 }
 
-void wb_writeout_inc(struct bdi_writeback *wb)
+void wb_writeout_add(struct bdi_writeback *wb, long bytes)
 {
 	unsigned long flags;
 
 	local_irq_save(flags);
-	__wb_writeout_inc(wb);
+	__wb_writeout_add(wb, bytes);
 	local_irq_restore(flags);
 }
-EXPORT_SYMBOL_GPL(wb_writeout_inc);
+EXPORT_SYMBOL_GPL(wb_writeout_add);
 
 /*
  * On idle system, we can be called long after we scheduled because we use
@@ -1362,8 +1362,8 @@ static void __wb_update_bandwidth(struct dirty_throttle_control *gdtc,
 	if (elapsed < BANDWIDTH_INTERVAL)
 		return;
 
-	dirtied = percpu_counter_read(&wb->stat[WB_DIRTIED]);
-	written = percpu_counter_read(&wb->stat[WB_WRITTEN]);
+	dirtied = percpu_counter_read(&wb->stat[WB_DIRTIED_BYTES]) >> PAGE_SHIFT;
+	written = percpu_counter_read(&wb->stat[WB_WRITTEN_BYTES]) >> PAGE_SHIFT;
 
 	/*
 	 * Skip quiet periods when disk bandwidth is under-utilized.
@@ -2435,7 +2435,7 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 		__inc_zone_page_state(page, NR_ZONE_WRITE_PENDING);
 		__inc_node_page_state(page, NR_DIRTIED);
 		inc_wb_stat(wb, WB_RECLAIMABLE);
-		inc_wb_stat(wb, WB_DIRTIED);
+		__add_wb_stat(wb, WB_DIRTIED_BYTES, PAGE_SIZE);
 		task_io_account_write(PAGE_SIZE);
 		current->nr_dirtied++;
 		this_cpu_inc(bdp_ratelimits);
@@ -2522,7 +2522,7 @@ void account_page_redirty(struct page *page)
 		wb = unlocked_inode_to_wb_begin(inode, &locked);
 		current->nr_dirtied--;
 		dec_node_page_state(page, NR_DIRTIED);
-		dec_wb_stat(wb, WB_DIRTIED);
+		__add_wb_stat(wb, WB_DIRTIED_BYTES, -(long)PAGE_SIZE);
 		unlocked_inode_to_wb_end(inode, locked);
 	}
 }
@@ -2744,7 +2744,7 @@ int test_clear_page_writeback(struct page *page)
 				struct bdi_writeback *wb = inode_to_wb(inode);
 
 				dec_wb_stat(wb, WB_WRITEBACK);
-				__wb_writeout_inc(wb);
+				__wb_writeout_add(wb, PAGE_SIZE);
 			}
 		}
 

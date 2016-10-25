@@ -68,14 +68,15 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 	wb_thresh = wb_calc_thresh(wb, dirty_thresh);
 
 #define K(x) ((x) << (PAGE_SHIFT - 10))
+#define BtoK(x) ((x) >> 10)
 	seq_printf(m,
 		   "BdiWriteback:       %10lu kB\n"
 		   "BdiReclaimable:     %10lu kB\n"
 		   "BdiDirtyThresh:     %10lu kB\n"
 		   "DirtyThresh:        %10lu kB\n"
 		   "BackgroundThresh:   %10lu kB\n"
-		   "BdiDirtied:         %10lu kB\n"
-		   "BdiWritten:         %10lu kB\n"
+		   "BdiDirtiedBytes:    %10lu kB\n"
+		   "BdiWrittenBytes:    %10lu kB\n"
 		   "BdiWriteBandwidth:  %10lu kBps\n"
 		   "b_dirty:            %10lu\n"
 		   "b_io:               %10lu\n"
@@ -88,8 +89,8 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   K(wb_thresh),
 		   K(dirty_thresh),
 		   K(background_thresh),
-		   (unsigned long) K(wb_stat(wb, WB_DIRTIED)),
-		   (unsigned long) K(wb_stat(wb, WB_WRITTEN)),
+		   (unsigned long) BtoK(wb_stat(wb, WB_DIRTIED_BYTES)),
+		   (unsigned long) BtoK(wb_stat(wb, WB_WRITTEN_BYTES)),
 		   (unsigned long) K(wb->write_bandwidth),
 		   nr_dirty,
 		   nr_io,

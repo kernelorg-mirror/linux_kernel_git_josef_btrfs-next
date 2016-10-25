@@ -1471,7 +1471,7 @@ static void fuse_writepage_finish(struct fuse_conn *fc, struct fuse_req *req)
 	for (i = 0; i < req->num_pages; i++) {
 		dec_wb_stat(&bdi->wb, WB_WRITEBACK);
 		dec_node_page_state(req->pages[i], NR_WRITEBACK_TEMP);
-		wb_writeout_inc(&bdi->wb);
+		wb_writeout_add(&bdi->wb, PAGE_SIZE);
 	}
 	wake_up(&fi->page_waitq);
 }
@@ -1776,7 +1776,7 @@ static bool fuse_writepage_in_flight(struct fuse_req *new_req,
 
 		dec_wb_stat(&bdi->wb, WB_WRITEBACK);
 		dec_node_page_state(page, NR_WRITEBACK_TEMP);
-		wb_writeout_inc(&bdi->wb);
+		wb_writeout_add(&bdi->wb, PAGE_SIZE);
 		fuse_writepage_free(fc, new_req);
 		fuse_request_free(new_req);
 		goto out;
