@@ -77,6 +77,8 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   "BackgroundThresh:   %10lu kB\n"
 		   "BdiDirtiedBytes:    %10lu kB\n"
 		   "BdiWrittenBytes:    %10lu kB\n"
+		   "BdiMetadataDirty:   %10lu kB\n"
+		   "BdiMetaWriteback:	%10lu kB\n"
 		   "BdiWriteBandwidth:  %10lu kBps\n"
 		   "b_dirty:            %10lu\n"
 		   "b_io:               %10lu\n"
@@ -91,6 +93,8 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   K(background_thresh),
 		   (unsigned long) BtoK(wb_stat(wb, WB_DIRTIED_BYTES)),
 		   (unsigned long) BtoK(wb_stat(wb, WB_WRITTEN_BYTES)),
+		   (unsigned long) BtoK(wb_stat(wb, WB_METADATA_DIRTY_BYTES)),
+		   (unsigned long) BtoK(wb_stat(wb, WB_METADATA_WRITEBACK_BYTES)),
 		   (unsigned long) K(wb->write_bandwidth),
 		   nr_dirty,
 		   nr_io,

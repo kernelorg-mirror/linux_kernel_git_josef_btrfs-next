@@ -249,6 +249,8 @@ static void wb_min_max_ratio(struct bdi_writeback *wb,
 
 #endif	/* CONFIG_CGROUP_WRITEBACK */
 
+#define BtoP(x) ((x) >> PAGE_SHIFT)
+
 /*
  * In a memory zone, there is a certain amount of pages we consider
  * available for the page cache, which is essentially the number of
@@ -297,6 +299,7 @@ static unsigned long node_dirtyable_memory(struct pglist_data *pgdat)
 
 	nr_pages += node_page_state(pgdat, NR_INACTIVE_FILE);
 	nr_pages += node_page_state(pgdat, NR_ACTIVE_FILE);
+	nr_pages += node_page_state(pgdat, NR_METADATA_BYTES) >> PAGE_SHIFT;
 
 	return nr_pages;
 }
@@ -373,11 +376,36 @@ static unsigned long global_dirtyable_memory(void)
 
 	x += global_node_page_state(NR_INACTIVE_FILE);
 	x += global_node_page_state(NR_ACTIVE_FILE);
+	x += global_node_page_state(NR_METADATA_BYTES) >> PAGE_SHIFT;
 
 	if (!vm_highmem_is_dirtyable)
 		x -= highmem_dirtyable_memory(x);
 
 	return x + 1;	/* Ensure that we never return 0 */
+}
+
+/**
+ * global_dirty_memory - the number of globally dirty pages
+ *
+ * Returns the global number of pages that are dirty in pagecache and metadata.
+ */
+static unsigned long global_dirty_memory(void)
+{
+	return global_node_page_state(NR_FILE_DIRTY) +
+		global_node_page_state(NR_UNSTABLE_NFS) +
+		(global_node_page_state(NR_METADATA_DIRTY_BYTES) >> PAGE_SHIFT);
+}
+
+/**
+ * global_writeback_memory - the number of pages under writeback globally
+ *
+ * Returns the global number of pages under writeback both in pagecache and in
+ * metadata.
+ */
+static unsigned long global_writeback_memory(void)
+{
+	return global_node_page_state(NR_WRITEBACK) +
+		(global_node_page_state(NR_METADATA_WRITEBACK_BYTES) >> PAGE_SHIFT);
 }
 
 /**
@@ -492,6 +520,7 @@ static unsigned long node_dirty_limit(struct pglist_data *pgdat)
 	return dirty;
 }
 
+
 /**
  * node_dirty_ok - tells whether a node is within its dirty limits
  * @pgdat: the node to check
@@ -507,6 +536,8 @@ bool node_dirty_ok(struct pglist_data *pgdat)
 	nr_pages += node_page_state(pgdat, NR_FILE_DIRTY);
 	nr_pages += node_page_state(pgdat, NR_UNSTABLE_NFS);
 	nr_pages += node_page_state(pgdat, NR_WRITEBACK);
+	nr_pages += BtoP(node_page_state(pgdat, NR_METADATA_DIRTY_BYTES));
+	nr_pages += BtoP(node_page_state(pgdat, NR_METADATA_WRITEBACK_BYTES));
 
 	return nr_pages <= limit;
 }
@@ -1514,7 +1545,7 @@ static long wb_min_pause(struct bdi_writeback *wb,
 static inline void wb_dirty_limits(struct dirty_throttle_control *dtc)
 {
 	struct bdi_writeback *wb = dtc->wb;
-	unsigned long wb_reclaimable;
+	unsigned long wb_reclaimable, wb_writeback;
 
 	/*
 	 * wb_thresh is not treated as some limiting factor as
@@ -1544,12 +1575,17 @@ static inline void wb_dirty_limits(struct dirty_throttle_control *dtc)
 	 * deltas.
 	 */
 	if (dtc->wb_thresh < 2 * wb_stat_error(wb)) {
-		wb_reclaimable = wb_stat_sum(wb, WB_RECLAIMABLE);
-		dtc->wb_dirty = wb_reclaimable + wb_stat_sum(wb, WB_WRITEBACK);
+		wb_reclaimable = wb_stat_sum(wb, WB_RECLAIMABLE) +
+			BtoP(wb_stat_sum(wb, WB_METADATA_DIRTY_BYTES));
+		wb_writeback = wb_stat_sum(wb, WB_WRITEBACK) +
+			BtoP(wb_stat_sum(wb, WB_METADATA_WRITEBACK_BYTES));
 	} else {
-		wb_reclaimable = wb_stat(wb, WB_RECLAIMABLE);
-		dtc->wb_dirty = wb_reclaimable + wb_stat(wb, WB_WRITEBACK);
+		wb_reclaimable = wb_stat(wb, WB_RECLAIMABLE) +
+			BtoP(wb_stat(wb, WB_METADATA_DIRTY_BYTES));
+		wb_writeback = wb_stat(wb, WB_WRITEBACK) +
+			BtoP(wb_stat(wb, WB_METADATA_WRITEBACK_BYTES));
 	}
+	dtc->wb_dirty = wb_reclaimable + wb_writeback;
 }
 
 /*
@@ -1594,10 +1630,9 @@ static void balance_dirty_pages(struct bdi_writeback *wb,
 		 * written to the server's write cache, but has not yet
 		 * been flushed to permanent storage.
 		 */
-		nr_reclaimable = global_node_page_state(NR_FILE_DIRTY) +
-					global_node_page_state(NR_UNSTABLE_NFS);
+		nr_reclaimable = global_dirty_memory();
 		gdtc->avail = global_dirtyable_memory();
-		gdtc->dirty = nr_reclaimable + global_node_page_state(NR_WRITEBACK);
+		gdtc->dirty = nr_reclaimable + global_writeback_memory();
 
 		domain_dirty_limits(gdtc);
 
@@ -1929,20 +1964,22 @@ bool wb_over_bg_thresh(struct bdi_writeback *wb)
 	struct dirty_throttle_control * const gdtc = &gdtc_stor;
 	struct dirty_throttle_control * const mdtc = mdtc_valid(&mdtc_stor) ?
 						     &mdtc_stor : NULL;
+	unsigned long wb_reclaimable;
 
 	/*
 	 * Similar to balance_dirty_pages() but ignores pages being written
 	 * as we're trying to decide whether to put more under writeback.
 	 */
 	gdtc->avail = global_dirtyable_memory();
-	gdtc->dirty = global_node_page_state(NR_FILE_DIRTY) +
-		      global_node_page_state(NR_UNSTABLE_NFS);
+	gdtc->dirty = global_dirty_memory();
 	domain_dirty_limits(gdtc);
 
 	if (gdtc->dirty > gdtc->bg_thresh)
 		return true;
 
-	if (wb_stat(wb, WB_RECLAIMABLE) >
+	wb_reclaimable = wb_stat(wb, WB_RECLAIMABLE) +
+		BtoP(wb_stat(wb, WB_METADATA_DIRTY_BYTES));
+	if (wb_reclaimable >
 	    wb_calc_thresh(gdtc->wb, gdtc->bg_thresh))
 		return true;
 
@@ -1957,7 +1994,7 @@ bool wb_over_bg_thresh(struct bdi_writeback *wb)
 		if (mdtc->dirty > mdtc->bg_thresh)
 			return true;
 
-		if (wb_stat(wb, WB_RECLAIMABLE) >
+		if (wb_reclaimable >
 		    wb_calc_thresh(mdtc->wb, mdtc->bg_thresh))
 			return true;
 	}
@@ -1979,8 +2016,7 @@ int dirty_writeback_centisecs_handler(struct ctl_table *table, int write,
 void laptop_mode_timer_fn(unsigned long data)
 {
 	struct request_queue *q = (struct request_queue *)data;
-	int nr_pages = global_node_page_state(NR_FILE_DIRTY) +
-		global_node_page_state(NR_UNSTABLE_NFS);
+	int nr_pages = global_dirty_memory();
 	struct bdi_writeback *wb;
 
 	/*
@@ -2442,6 +2478,84 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 	}
 }
 EXPORT_SYMBOL(account_page_dirtied);
+
+/*
+ * account_metadata_dirtied
+ * @page - the page being dirited
+ * @bdi - the bdi that owns this page
+ * @bytes - the number of bytes being dirtied
+ *
+ * Do the dirty page accounting for metadata pages that aren't backed by an
+ * address_space.
+ */
+void account_metadata_dirtied(struct page *page, struct backing_dev_info *bdi,
+			      long bytes)
+{
+	mod_node_page_state(page_pgdat(page), NR_METADATA_DIRTY_BYTES,
+			    bytes);
+	__add_wb_stat(&bdi->wb, WB_DIRTIED_BYTES, bytes);
+	__add_wb_stat(&bdi->wb, WB_METADATA_DIRTY_BYTES, bytes);
+	current->nr_dirtied++;
+	task_io_account_write(bytes);
+	this_cpu_inc(bdp_ratelimits);
+}
+EXPORT_SYMBOL(account_metadata_dirtied);
+
+/*
+ * account_metadata_cleaned
+ * @page - the page being cleaned
+ * @bdi - the bdi that owns this page
+ * @bytes - the number of bytes cleaned
+ *
+ * Called on a no longer dirty metadata page.
+ */
+void account_metadata_cleaned(struct page *page, struct backing_dev_info *bdi,
+			      long bytes)
+{
+	mod_node_page_state(page_pgdat(page), NR_METADATA_DIRTY_BYTES,
+			    -bytes);
+	__add_wb_stat(&bdi->wb, WB_METADATA_DIRTY_BYTES, -bytes);
+	task_io_account_cancelled_write(bytes);
+}
+EXPORT_SYMBOL(account_metadata_cleaned);
+
+/*
+ * account_metadata_writeback
+ * @page - the page being marked as writeback
+ * @bdi - the bdi that owns this page
+ * @bytes - the number of bytes we are submitting for writeback
+ *
+ * Called on a metadata page that has been marked writeback.
+ */
+void account_metadata_writeback(struct page *page,
+				struct backing_dev_info *bdi, long bytes)
+{
+	__add_wb_stat(&bdi->wb, WB_METADATA_DIRTY_BYTES, -bytes);
+	mod_node_page_state(page_pgdat(page), NR_METADATA_DIRTY_BYTES,
+					 -bytes);
+	__add_wb_stat(&bdi->wb, WB_METADATA_WRITEBACK_BYTES, bytes);
+	mod_node_page_state(page_pgdat(page), NR_METADATA_WRITEBACK_BYTES,
+					 bytes);
+}
+EXPORT_SYMBOL(account_metadata_writeback);
+
+/*
+ * account_metadata_end_writeback
+ * @page - the page we are ending writeback on
+ * @bdi - the bdi that owns this page
+ * @bytes - the number of bytes that just ended writeback
+ *
+ * Called on a metadata page that has completed writeback.
+ */
+void account_metadata_end_writeback(struct page *page,
+				    struct backing_dev_info *bdi, long bytes)
+{
+	__add_wb_stat(&bdi->wb, WB_METADATA_WRITEBACK_BYTES, -bytes);
+	mod_node_page_state(page_pgdat(page), NR_METADATA_WRITEBACK_BYTES,
+			    -bytes);
+	__wb_writeout_add(&bdi->wb, bytes);
+}
+EXPORT_SYMBOL(account_metadata_end_writeback);
 
 /*
  * Helper function for deaccounting dirty page without writeback.

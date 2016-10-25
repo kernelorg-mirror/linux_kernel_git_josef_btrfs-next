@@ -42,6 +42,8 @@ static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 	seq_write(m, " kB\n", 4);
 }
 
+#define BtoP(x) ((x) >> PAGE_SHIFT)
+
 static int meminfo_proc_show(struct seq_file *m, void *v)
 {
 	struct sysinfo i;
@@ -71,6 +73,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "Buffers:        ", i.bufferram);
 	show_val_kb(m, "Cached:         ", cached);
 	show_val_kb(m, "SwapCached:     ", total_swapcache_pages());
+	show_val_kb(m, "Metadata:       ",
+		    BtoP(global_node_page_state(NR_METADATA_BYTES)));
 	show_val_kb(m, "Active:         ", pages[LRU_ACTIVE_ANON] +
 					   pages[LRU_ACTIVE_FILE]);
 	show_val_kb(m, "Inactive:       ", pages[LRU_INACTIVE_ANON] +
@@ -98,8 +102,12 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "SwapFree:       ", i.freeswap);
 	show_val_kb(m, "Dirty:          ",
 		    global_node_page_state(NR_FILE_DIRTY));
+	show_val_kb(m, "MetadataDirty:  ",
+		    BtoP(global_node_page_state(NR_METADATA_DIRTY_BYTES)));
 	show_val_kb(m, "Writeback:      ",
 		    global_node_page_state(NR_WRITEBACK));
+	show_val_kb(m, "MetaWriteback:  ",
+		    BtoP(global_node_page_state(NR_METADATA_WRITEBACK_BYTES)));
 	show_val_kb(m, "AnonPages:      ",
 		    global_node_page_state(NR_ANON_MAPPED));
 	show_val_kb(m, "Mapped:         ",

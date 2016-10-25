@@ -616,6 +616,7 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
 		free = global_zone_page_state(NR_FREE_PAGES);
 		free += global_node_page_state(NR_FILE_PAGES);
+		free += global_node_page_state(NR_METADATA_BYTES) >> PAGE_SHIFT;
 
 		/*
 		 * shmem pages shouldn't be counted as free in this

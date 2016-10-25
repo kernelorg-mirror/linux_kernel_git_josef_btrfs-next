@@ -179,8 +179,24 @@ enum node_stat_item {
 	NR_VMSCAN_IMMEDIATE,	/* Prioritise for reclaim when writeback ends */
 	NR_DIRTIED,		/* page dirtyings since bootup */
 	NR_WRITTEN,		/* page writings since bootup */
+
+	/*
+	 * The following counters will overflow on 32bit machines if we end up
+	 * with more that 2 gib of metadata, however we can't address that much
+	 * anyway so it shouldn't be a real issue.
+	 */
+	NR_METADATA_DIRTY_BYTES,	/* Metadata dirty bytes */
+	NR_METADATA_WRITEBACK_BYTES,	/* Metadata writeback bytes */
+	NR_METADATA_BYTES,	/* total metadata bytes in use. */
 	NR_VM_NODE_STAT_ITEMS
 };
+
+static inline int is_bytes_node_stat(enum node_stat_item item)
+{
+	return (item == NR_METADATA_DIRTY_BYTES ||
+		item == NR_METADATA_WRITEBACK_BYTES ||
+		item == NR_METADATA_BYTES);
+}
 
 /*
  * We do arithmetic on the LRU lists in various places in the code,

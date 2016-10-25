@@ -390,6 +390,8 @@ TRACE_EVENT(writeback_queue_io,
 	)
 );
 
+#define BtoP(x) ((x) >> PAGE_SHIFT)
+
 TRACE_EVENT(global_dirty_state,
 
 	TP_PROTO(unsigned long background_thresh,
@@ -402,7 +404,9 @@ TRACE_EVENT(global_dirty_state,
 
 	TP_STRUCT__entry(
 		__field(unsigned long,	nr_dirty)
+		__field(unsigned long,	nr_metadata_dirty)
 		__field(unsigned long,	nr_writeback)
+		__field(unsigned long,	nr_metadata_writeback)
 		__field(unsigned long,	nr_unstable)
 		__field(unsigned long,	background_thresh)
 		__field(unsigned long,	dirty_thresh)
@@ -413,7 +417,9 @@ TRACE_EVENT(global_dirty_state,
 
 	TP_fast_assign(
 		__entry->nr_dirty	= global_node_page_state(NR_FILE_DIRTY);
+		__entry->nr_metadata_dirty = BtoP(global_node_page_state(NR_METADATA_DIRTY_BYTES));
 		__entry->nr_writeback	= global_node_page_state(NR_WRITEBACK);
+		__entry->nr_metadata_dirty = BtoP(global_node_page_state(NR_METADATA_WRITEBACK_BYTES));
 		__entry->nr_unstable	= global_node_page_state(NR_UNSTABLE_NFS);
 		__entry->nr_dirtied	= global_node_page_state(NR_DIRTIED);
 		__entry->nr_written	= global_node_page_state(NR_WRITTEN);
@@ -424,7 +430,8 @@ TRACE_EVENT(global_dirty_state,
 
 	TP_printk("dirty=%lu writeback=%lu unstable=%lu "
 		  "bg_thresh=%lu thresh=%lu limit=%lu "
-		  "dirtied=%lu written=%lu",
+		  "dirtied=%lu written=%lu metadata_dirty=%lu "
+		  "metadata_writeback=%lu",
 		  __entry->nr_dirty,
 		  __entry->nr_writeback,
 		  __entry->nr_unstable,
@@ -432,7 +439,9 @@ TRACE_EVENT(global_dirty_state,
 		  __entry->dirty_thresh,
 		  __entry->dirty_limit,
 		  __entry->nr_dirtied,
-		  __entry->nr_written
+		  __entry->nr_written,
+		  __entry->nr_metadata_dirty,
+		  __entry->nr_metadata_writeback
 	)
 );
 

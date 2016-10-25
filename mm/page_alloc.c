@@ -4640,6 +4640,8 @@ static bool show_mem_node_skip(unsigned int flags, int nid, nodemask_t *nodemask
 }
 
 #define K(x) ((x) << (PAGE_SHIFT-10))
+#define BtoK(x) ((x) >> 10)
+#define BtoP(x) ((x) >> PAGE_SHIFT)
 
 static void show_migration_types(unsigned char type)
 {
@@ -4694,10 +4696,11 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 
 	printk("active_anon:%lu inactive_anon:%lu isolated_anon:%lu\n"
 		" active_file:%lu inactive_file:%lu isolated_file:%lu\n"
-		" unevictable:%lu dirty:%lu writeback:%lu unstable:%lu\n"
-		" slab_reclaimable:%lu slab_unreclaimable:%lu\n"
-		" mapped:%lu shmem:%lu pagetables:%lu bounce:%lu\n"
-		" free:%lu free_pcp:%lu free_cma:%lu\n",
+		" unevictable:%lu metadata:%lu dirty:%lu metadata_dirty:%lu\n"
+		" writeback:%lu unstable:%lu metadata_writeback:%lu\n"
+		" slab_reclaimable:%lu slab_unreclaimable:%lu mapped:%lu\n"
+		" shmem:%lu pagetables:%lu bounce:%lu free:%lu free_pcp:%lu\n"
+	        " free_cma:%lu\n",
 		global_node_page_state(NR_ACTIVE_ANON),
 		global_node_page_state(NR_INACTIVE_ANON),
 		global_node_page_state(NR_ISOLATED_ANON),
@@ -4705,9 +4708,12 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 		global_node_page_state(NR_INACTIVE_FILE),
 		global_node_page_state(NR_ISOLATED_FILE),
 		global_node_page_state(NR_UNEVICTABLE),
+		BtoP(global_node_page_state(NR_METADATA_BYTES)),
 		global_node_page_state(NR_FILE_DIRTY),
+		BtoP(global_node_page_state(NR_METADATA_DIRTY_BYTES)),
 		global_node_page_state(NR_WRITEBACK),
 		global_node_page_state(NR_UNSTABLE_NFS),
+		BtoP(global_node_page_state(NR_METADATA_WRITEBACK_BYTES)),
 		global_node_page_state(NR_SLAB_RECLAIMABLE),
 		global_node_page_state(NR_SLAB_UNRECLAIMABLE),
 		global_node_page_state(NR_FILE_MAPPED),
@@ -4730,9 +4736,12 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 			" unevictable:%lukB"
 			" isolated(anon):%lukB"
 			" isolated(file):%lukB"
+			" metadata:%lukB"
 			" mapped:%lukB"
 			" dirty:%lukB"
+			" metadata_dirty:%lukB"
 			" writeback:%lukB"
+			" metadata_writeback:%lukB"
 			" shmem:%lukB"
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 			" shmem_thp: %lukB"
@@ -4751,9 +4760,12 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 			K(node_page_state(pgdat, NR_UNEVICTABLE)),
 			K(node_page_state(pgdat, NR_ISOLATED_ANON)),
 			K(node_page_state(pgdat, NR_ISOLATED_FILE)),
+			BtoK(node_page_state(pgdat, NR_METADATA_BYTES)),
 			K(node_page_state(pgdat, NR_FILE_MAPPED)),
 			K(node_page_state(pgdat, NR_FILE_DIRTY)),
+			BtoK(node_page_state(pgdat, NR_METADATA_DIRTY_BYTES)),
 			K(node_page_state(pgdat, NR_WRITEBACK)),
+			BtoK(node_page_state(pgdat, NR_METADATA_WRITEBACK_BYTES)),
 			K(node_page_state(pgdat, NR_SHMEM)),
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 			K(node_page_state(pgdat, NR_SHMEM_THPS) * HPAGE_PMD_NR),

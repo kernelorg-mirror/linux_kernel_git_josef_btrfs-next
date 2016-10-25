@@ -51,6 +51,8 @@ static DEVICE_ATTR(cpumap,  S_IRUGO, node_read_cpumask, NULL);
 static DEVICE_ATTR(cpulist, S_IRUGO, node_read_cpulist, NULL);
 
 #define K(x) ((x) << (PAGE_SHIFT - 10))
+#define BtoK(x) ((x) >> 10)
+
 static ssize_t node_read_meminfo(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
@@ -99,7 +101,10 @@ static ssize_t node_read_meminfo(struct device *dev,
 #endif
 	n += sprintf(buf + n,
 		       "Node %d Dirty:          %8lu kB\n"
+		       "Node %d MetadataDirty:	%8lu kB\n"
 		       "Node %d Writeback:      %8lu kB\n"
+		       "Node %d MetaWriteback:  %8lu kB\n"
+		       "Node %d Metadata:       %8lu kB\n"
 		       "Node %d FilePages:      %8lu kB\n"
 		       "Node %d Mapped:         %8lu kB\n"
 		       "Node %d AnonPages:      %8lu kB\n"
@@ -119,8 +124,11 @@ static ssize_t node_read_meminfo(struct device *dev,
 #endif
 			,
 		       nid, K(node_page_state(pgdat, NR_FILE_DIRTY)),
+		       nid, BtoK(node_page_state(pgdat, NR_METADATA_DIRTY_BYTES)),
 		       nid, K(node_page_state(pgdat, NR_WRITEBACK)),
+		       nid, BtoK(node_page_state(pgdat, NR_METADATA_WRITEBACK_BYTES)),
 		       nid, K(node_page_state(pgdat, NR_FILE_PAGES)),
+		       nid, BtoK(node_page_state(pgdat, NR_METADATA_BYTES)),
 		       nid, K(node_page_state(pgdat, NR_FILE_MAPPED)),
 		       nid, K(node_page_state(pgdat, NR_ANON_MAPPED)),
 		       nid, K(i.sharedram),

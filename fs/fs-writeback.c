@@ -1814,6 +1814,7 @@ static struct wb_writeback_work *get_next_work_item(struct bdi_writeback *wb)
 	return work;
 }
 
+#define BtoP(x) ((x) >> PAGE_SHIFT)
 /*
  * Add in the number of potentially dirty inodes, because each inode
  * write can dirty pagecache in the underlying blockdev.
@@ -1822,6 +1823,7 @@ static unsigned long get_nr_dirty_pages(void)
 {
 	return global_node_page_state(NR_FILE_DIRTY) +
 		global_node_page_state(NR_UNSTABLE_NFS) +
+		BtoP(global_node_page_state(NR_METADATA_DIRTY_BYTES)) +
 		get_nr_dirty_inodes();
 }
 

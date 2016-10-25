@@ -273,7 +273,7 @@ void __mod_node_page_state(struct pglist_data *pgdat, enum node_stat_item item,
 
 	t = __this_cpu_read(pcp->stat_threshold);
 
-	if (unlikely(x > t || x < -t)) {
+	if (!is_bytes_node_stat(item) && unlikely(x > t || x < -t)) {
 		node_page_state_add(x, pgdat, item);
 		x = 0;
 	}
@@ -1090,6 +1090,9 @@ const char * const vmstat_text[] = {
 	"nr_vmscan_immediate_reclaim",
 	"nr_dirtied",
 	"nr_written",
+	"nr_metadata_dirty_bytes",
+	"nr_metadata_writeback_bytes",
+	"nr_metadata_bytes",
 
 	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",
