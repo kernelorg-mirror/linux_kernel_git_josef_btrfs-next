@@ -1479,6 +1479,31 @@ static long writeback_chunk_size(struct bdi_writeback *wb,
 	return pages;
 }
 
+static long writeback_sb_metadata(struct super_block *sb,
+				  struct bdi_writeback *wb,
+				  struct wb_writeback_work *work)
+{
+	struct writeback_control wbc = {
+		.sync_mode		= work->sync_mode,
+		.tagged_writepages	= work->tagged_writepages,
+		.for_kupdate		= work->for_kupdate,
+		.for_background		= work->for_background,
+		.for_sync		= work->for_sync,
+		.range_cyclic		= work->range_cyclic,
+		.range_start		= 0,
+		.range_end		= LLONG_MAX,
+	};
+	long write_chunk;
+
+	write_chunk = writeback_chunk_size(wb, work);
+	wbc.nr_to_write = write_chunk;
+	sb->s_op->write_metadata(sb, &wbc);
+	work->nr_pages -= write_chunk - wbc.nr_to_write;
+
+	return write_chunk - wbc.nr_to_write;
+}
+
+
 /*
  * Write a portion of b_io inodes which belong to @sb.
  *
@@ -1505,6 +1530,7 @@ static long writeback_sb_inodes(struct super_block *sb,
 	unsigned long start_time = jiffies;
 	long write_chunk;
 	long wrote = 0;  /* count both pages and inodes */
+	bool done = false;
 
 	while (!list_empty(&wb->b_io)) {
 		struct inode *inode = wb_inode(wb->b_io.prev);
@@ -1621,10 +1647,11 @@ static long writeback_sb_inodes(struct super_block *sb,
 		 * background threshold and other termination conditions.
 		 */
 		if (wrote) {
-			if (time_is_before_jiffies(start_time + HZ / 10UL))
+			if (time_is_before_jiffies(start_time + HZ / 10UL) ||
+			    work->nr_pages <= 0) {
+				done = true;
 				break;
-			if (work->nr_pages <= 0)
-				break;
+			}
 		}
 	}
 	return wrote;
@@ -1635,6 +1662,7 @@ static long __writeback_inodes_wb(struct bdi_writeback *wb,
 {
 	unsigned long start_time = jiffies;
 	long wrote = 0;
+	bool done = false;
 
 	while (!list_empty(&wb->b_io)) {
 		struct inode *inode = wb_inode(wb->b_io.prev);
@@ -1654,13 +1682,55 @@ static long __writeback_inodes_wb(struct bdi_writeback *wb,
 
 		/* refer to the same tests at the end of writeback_sb_inodes */
 		if (wrote) {
-			if (time_is_before_jiffies(start_time + HZ / 10UL))
+			if (time_is_before_jiffies(start_time + HZ / 10UL) ||
+			    work->nr_pages <= 0) {
+				done = true;
 				break;
-			if (work->nr_pages <= 0)
-				break;
+			}
 		}
 	}
+
+	if (!done && wb_stat(wb, WB_METADATA_DIRTY_BYTES)) {
+		LIST_HEAD(list);
+
+		spin_unlock(&wb->list_lock);
+		spin_lock(&wb->bdi->sb_list_lock);
+		list_splice_init(&wb->bdi->dirty_sb_list, &list);
+		while (!list_empty(&list)) {
+			struct super_block *sb;
+
+			sb = list_first_entry(&list, struct super_block,
+					      s_bdi_dirty_list);
+			list_move_tail(&sb->s_bdi_dirty_list,
+				       &wb->bdi->dirty_sb_list);
+			if (!sb->s_op->write_metadata)
+				continue;
+			if (!trylock_super(sb))
+				continue;
+			spin_unlock(&wb->bdi->sb_list_lock);
+			wrote += writeback_sb_metadata(sb, wb, work);
+			spin_lock(&wb->bdi->sb_list_lock);
+			up_read(&sb->s_umount);
+		}
+		spin_unlock(&wb->bdi->sb_list_lock);
+		spin_lock(&wb->list_lock);
+	}
 	/* Leave any unwritten inodes on b_io */
+	return wrote;
+}
+
+static long writeback_sb(struct super_block *sb, struct bdi_writeback *wb,
+			 struct wb_writeback_work *work)
+{
+	unsigned long start_time = jiffies;
+	long wrote = writeback_sb_inodes(sb, wb, work);
+
+	if ((!time_is_before_jiffies(start_time + HZ / 10UL) ||
+	     work->nr_pages) && sb->s_op->write_metadata) {
+		spin_unlock(&wb->list_lock);
+		wrote += writeback_sb_metadata(sb, wb, work);
+		spin_lock(&wb->list_lock);
+	}
 	return wrote;
 }
 
@@ -1756,7 +1826,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		if (list_empty(&wb->b_io))
 			queue_io(wb, work);
 		if (work->sb)
-			progress = writeback_sb_inodes(work->sb, wb, work);
+			progress = writeback_sb(work->sb, wb, work);
 		else
 			progress = __writeback_inodes_wb(wb, work);
 		trace_writeback_written(wb, work);
