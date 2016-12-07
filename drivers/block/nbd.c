@@ -705,6 +705,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 			kfree(nbd->socks);
 			nbd->socks = NULL;
 			nbd->num_connections = 0;
+			nbd->task_setup = NULL;
 		}
 		return 0;
 
