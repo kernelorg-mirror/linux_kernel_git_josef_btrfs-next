@@ -81,6 +81,13 @@ static netdev_tx_t loopback_xmit(struct sk_buff *skb,
 	 */
 	skb_dst_force(skb);
 
+	/* If our transmitter was a pfmemalloc socket we need to clear
+	 * pfmemalloc here, otherwise the receiving socket may not be
+	 * pfmemalloc, and if this is a tcp packet then it'll get dropped and
+	 * all traffic will halt.
+	 */
+	skb->pfmemalloc = false;
+
 	skb->protocol = eth_type_trans(skb, dev);
 
 	/* it's OK to use per_cpu_ptr() because BHs are off */
