@@ -55,6 +55,7 @@ struct nbd_sock {
 #define NBD_DISCONNECT_REQUESTED	1
 #define NBD_DISCONNECTED		2
 #define NBD_HAS_SOCKS_REF		3
+#define NBD_RECONNECT			4
 
 struct nbd_device {
 	u32 flags;
@@ -66,6 +67,7 @@ struct nbd_device {
 	wait_queue_head_t socks_wq;
 	int num_connections;
 
+	wait_queue_head_t reconn_wq;
 	int magic;
 
 	struct blk_mq_tag_set tag_set;
@@ -88,6 +90,7 @@ struct nbd_device {
 struct nbd_cmd {
 	struct nbd_device *nbd;
 	int index;
+	int timeouts;
 	struct completion send_complete;
 };
 
@@ -129,6 +132,25 @@ static const char *nbdcmd_to_ascii(int cmd)
 	return "invalid";
 }
 
+static int nbd_disconnected(struct nbd_device *nbd)
+{
+	return test_bit(NBD_DISCONNECTED, &nbd->runtime_flags) ||
+		test_bit(NBD_DISCONNECT_REQUESTED, &nbd->runtime_flags);
+}
+
+static int need_reconnect(struct nbd_device *nbd)
+{
+	if (nbd_disconnected(nbd))
+		return 0;
+	if (test_bit(NBD_RECONNECT, &nbd->runtime_flags))
+		return 1;
+	if (nbd->flags & NBD_FLAG_CAN_RECONNECT) {
+		set_bit(NBD_RECONNECT, &nbd->runtime_flags);
+		return 1;
+	}
+	return 0;
+}
+
 static int nbd_socks_get_unless_zero(struct nbd_device *nbd)
 {
 	return atomic_add_unless(&nbd->socks_ref, 1, 0);
@@ -148,6 +170,15 @@ static void nbd_socks_put(struct nbd_device *nbd)
 		}
 		mutex_unlock(&nbd->socks_lock);
 	}
+}
+
+static int nbd_clear_reconnect(struct nbd_device *nbd)
+{
+	if (test_and_clear_bit(NBD_RECONNECT, &nbd->runtime_flags)) {
+		wake_up(&nbd->reconn_wq);
+		return 1;
+	}
+	return 0;
 }
 
 static int nbd_size_clear(struct nbd_device *nbd, struct block_device *bdev)
@@ -209,6 +240,7 @@ static void sock_shutdown(struct nbd_device *nbd)
 		nsock->dead = true;
 	}
 	dev_warn(disk_to_dev(nbd->disk), "shutting down sockets\n");
+	nbd_clear_reconnect(nbd);
 }
 
 static enum blk_eh_timer_return nbd_xmit_timeout(struct request *req,
@@ -222,26 +254,12 @@ static enum blk_eh_timer_return nbd_xmit_timeout(struct request *req,
 		return BLK_EH_HANDLED;
 	}
 
-	if (nbd->num_connections > 1) {
+	if (nbd->num_connections > 1 && cmd->timeouts++ < 1) {
 		dev_err_ratelimited(nbd_to_dev(nbd),
-				    "Connection timed out, retrying\n");
-		/*
-		 * Hooray we have more connections, requeue this IO, the submit
-		 * path will put it on a real connection.
-		 */
-		if (nbd->socks && nbd->num_connections > 1) {
-			if (cmd->index < nbd->num_connections) {
-				struct nbd_sock *nsock =
-					nbd->socks[cmd->index];
-				mutex_lock(&nsock->tx_lock);
-				nsock->dead = true;
-				kernel_sock_shutdown(nsock->sock, SHUT_RDWR);
-				mutex_unlock(&nsock->tx_lock);
-			}
-			blk_mq_requeue_request(req, true);
-			nbd_socks_put(nbd);
-			return BLK_EH_RESET_TIMER;
-		}
+				    "Connection timed out, retrying %p\n", cmd);
+		blk_mq_requeue_request(req, true);
+		nbd_socks_put(nbd);
+		return BLK_EH_NOT_HANDLED;
 	} else {
 		dev_err_ratelimited(nbd_to_dev(nbd),
 				    "Connection timed out\n");
@@ -416,12 +434,6 @@ static inline int sock_recv_bvec(struct nbd_device *nbd, int index,
 			   bvec->bv_len, MSG_WAITALL);
 	kunmap(bvec->bv_page);
 	return result;
-}
-
-static int nbd_disconnected(struct nbd_device *nbd)
-{
-	return test_bit(NBD_DISCONNECTED, &nbd->runtime_flags) ||
-		test_bit(NBD_DISCONNECT_REQUESTED, &nbd->runtime_flags);
 }
 
 /* NULL returned = something went wrong, inform userspace */
@@ -611,11 +623,30 @@ static int find_fallback(struct nbd_device *nbd, int index)
 	return new_index;
 }
 
+static int wait_reconnect(struct nbd_cmd *cmd)
+{
+	struct nbd_device *nbd = cmd->nbd;
+	long timeout = nbd->tag_set.timeout;
+	int ret;
+
+	do {
+		printk(KERN_ERR "waiting on reconnect for %p, timeouts %d\n", cmd, cmd->timeouts);
+		ret = wait_event_timeout(nbd->reconn_wq,
+					 !test_bit(NBD_RECONNECT,
+						   &nbd->runtime_flags),
+					 timeout);
+		printk(KERN_ERR "finished waiting to reconnect for %p, ret %d\n", cmd, ret);
+	} while (!ret && cmd->timeouts++ < 1);
+
+	return test_bit(NBD_RECONNECT, &nbd->runtime_flags);
+}
+
 static int nbd_handle_cmd(struct nbd_cmd *cmd, int index)
 {
 	struct request *req = blk_mq_rq_from_pdu(cmd);
 	struct nbd_device *nbd = cmd->nbd;
 	struct nbd_sock *nsock;
+	int orig_index = index;
 	int ret;
 
 	if (!nbd_socks_get_unless_zero(nbd)) {
@@ -636,6 +667,10 @@ again:
 	if (nsock->dead) {
 		index = find_fallback(nbd, index);
 		if (index < 0) {
+			if (need_reconnect(nbd) && !wait_reconnect(cmd)) {
+				index = orig_index;
+				goto again;
+			}
 			nbd_socks_put(nbd);
 			return -EIO;
 		}
@@ -732,6 +767,28 @@ static int nbd_add_socket(struct nbd_device *nbd, struct block_device *bdev,
 		goto out;
 	}
 
+	if (unlikely(test_bit(NBD_RECONNECT, &nbd->runtime_flags))) {
+		int i, found = 0;
+
+		for (i = 0; i < nbd->num_connections; i++) {
+			if (nbd->socks[i]->dead) {
+				printk(KERN_ERR "JOSEF: reconnecting sock %d\n", i);
+				nbd->socks[i]->fallback_index = -1;
+				nbd->socks[i]->sock = sock;
+				nbd->socks[i]->dead = false;
+				found = 1;
+				break;
+			}
+		}
+
+		if (!found)
+			dev_err(disk_to_dev(nbd->disk),
+				"No dead connections to reconnect\n");
+		else
+			err = 0;
+		goto out;
+	}
+
 	err = -ENOMEM;
 	socks = krealloc(nbd->socks, (nbd->num_connections + 1) *
 			 sizeof(struct nbd_sock *), GFP_KERNEL);
@@ -814,13 +871,10 @@ static int nbd_disconnect(struct nbd_device *nbd, struct block_device *bdev)
 	if (!nbd_socks_get_unless_zero(nbd))
 		return -EINVAL;
 
-	mutex_unlock(&nbd->config_lock);
-	fsync_bdev(bdev);
-	mutex_lock(&nbd->config_lock);
-
 	if (!test_and_set_bit(NBD_DISCONNECT_REQUESTED,
 			      &nbd->runtime_flags))
 		send_disconnects(nbd);
+	nbd_clear_reconnect(nbd);
 	nbd_socks_put(nbd);
 	return 0;
 }
@@ -843,10 +897,14 @@ static int nbd_start_device(struct nbd_device *nbd, struct block_device *bdev)
 	int num_connections = nbd->num_connections;
 	int error = 0, i;
 
-	if (nbd->task_recv)
+	if (nbd->task_recv) {
+		nbd_clear_reconnect(nbd);
 		return -EBUSY;
-	if (!nbd->socks)
+	}
+	if (!nbd->socks) {
+		nbd_clear_reconnect(nbd);
 		return -EINVAL;
+	}
 	if (num_connections > 1 &&
 	    !(nbd->flags & NBD_FLAG_CAN_MULTI_CONN)) {
 		dev_err(disk_to_dev(nbd->disk), "server does not support multiple connections per device.\n");
@@ -854,13 +912,13 @@ static int nbd_start_device(struct nbd_device *nbd, struct block_device *bdev)
 		goto out_err;
 	}
 
-	blk_mq_update_nr_hw_queues(&nbd->tag_set, nbd->num_connections);
 	args = kcalloc(num_connections, sizeof(*args), GFP_KERNEL);
 	if (!args) {
 		error = -ENOMEM;
 		goto out_err;
 	}
 	nbd->task_recv = current;
+	nbd->task_setup = current;
 	mutex_unlock(&nbd->config_lock);
 
 	nbd_parse_flags(nbd, bdev);
@@ -883,13 +941,25 @@ static int nbd_start_device(struct nbd_device *nbd, struct block_device *bdev)
 		args[i].index = i;
 		queue_work(recv_workqueue, &args[i].work);
 	}
+
+	if (!nbd_clear_reconnect(nbd))
+		blk_mq_update_nr_hw_queues(&nbd->tag_set,
+					   nbd->num_connections);
 	wait_event_interruptible(nbd->recv_wq,
 				 atomic_read(&nbd->recv_threads) == 0);
 	for (i = 0; i < num_connections; i++)
 		flush_work(&args[i].work);
 	nbd_dev_dbg_close(nbd);
-	nbd_size_clear(nbd, bdev);
 	device_remove_file(disk_to_dev(nbd->disk), &pid_attr);
+	if (nbd->flags & NBD_FLAG_CAN_RECONNECT &&
+	    !test_bit(NBD_DISCONNECT_REQUESTED, &nbd->runtime_flags)) {
+		set_bit(NBD_RECONNECT, &nbd->runtime_flags);
+		mutex_lock(&nbd->config_lock);
+		nbd->task_recv = NULL;
+		printk(KERN_ERR "JOSEF: TRYING RECONNECT\n");
+		return -EAGAIN;
+	}
+	nbd_size_clear(nbd, bdev);
 out_recv:
 	mutex_lock(&nbd->config_lock);
 	nbd->task_recv = NULL;
@@ -903,6 +973,7 @@ out_err:
 		error = -ETIMEDOUT;
 
 	nbd_reset(nbd);
+	printk(KERN_ERR "JOSEF: DOIT RETURNING %d, flags %u\n", error, nbd->flags);
 	return error;
 }
 
@@ -1110,6 +1181,7 @@ static int nbd_init_request(void *data, struct request *rq,
 {
 	struct nbd_cmd *cmd = blk_mq_rq_to_pdu(rq);
 	cmd->nbd = data;
+	cmd->timeouts = 0;
 	return 0;
 }
 
@@ -1203,6 +1275,7 @@ static int nbd_dev_add(int index)
 	sprintf(disk->disk_name, "nbd%d", index);
 	init_waitqueue_head(&nbd->recv_wq);
 	init_waitqueue_head(&nbd->socks_wq);
+	init_waitqueue_head(&nbd->reconn_wq);
 	nbd_reset(nbd);
 	add_disk(disk);
 	return index;

@@ -44,7 +44,7 @@ enum {
 /* there is a gap here to match userspace */
 #define NBD_FLAG_SEND_TRIM	(1 << 5) /* send trim/discard */
 #define NBD_FLAG_CAN_MULTI_CONN	(1 << 8)	/* Server supports multiple connections per export. */
-
+#define NBD_FLAG_CAN_RECONNECT	(1 << 20)
 /* userspace doesn't need the nbd_device structure */
 
 /* These are sent over the network in the request/reply magic fields */
