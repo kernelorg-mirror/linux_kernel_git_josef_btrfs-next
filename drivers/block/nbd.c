@@ -74,6 +74,7 @@ struct link_dead_args {
 #define NBD_HAS_PID_FILE		3
 #define NBD_HAS_CONFIG_REF		4
 #define NBD_BOUND			5
+#define NBD_DESTROY_ON_DISCONNECT	6
 
 struct nbd_config {
 	u32 flags;
@@ -174,6 +175,7 @@ static void nbd_dev_remove(struct nbd_device *nbd)
 		del_gendisk(disk);
 		blk_cleanup_queue(disk->queue);
 		blk_mq_free_tag_set(&nbd->tag_set);
+		disk->private_data = NULL;
 		put_disk(disk);
 	}
 	kfree(nbd);
@@ -1028,6 +1030,7 @@ static void nbd_config_put(struct nbd_device *nbd)
 			kfree(config->socks);
 		}
 		nbd_reset(nbd);
+
 		mutex_unlock(&nbd->config_lock);
 		nbd_put(nbd);
 		module_put(THIS_MODULE);
@@ -1540,6 +1543,7 @@ static int nbd_genl_connect(struct sk_buff *skb, struct genl_info *info)
 	struct nbd_config *config;
 	int index = -1;
 	int ret;
+	bool put_dev = false;
 
 	if (!netlink_capable(skb, CAP_SYS_ADMIN))
 		return -EPERM;
@@ -1634,6 +1638,15 @@ again:
 	if (info->attrs[NBD_ATTR_SERVER_FLAGS])
 		config->flags =
 			nla_get_u64(info->attrs[NBD_ATTR_SERVER_FLAGS]);
+	if (info->attrs[NBD_ATTR_CLIENT_FLAGS]) {
+		u64 flags = nla_get_u64(info->attrs[NBD_ATTR_CLIENT_FLAGS]);
+		if (flags & NBD_CFLAG_DESTROY_ON_DISCONNECT) {
+			set_bit(NBD_DESTROY_ON_DISCONNECT,
+				&config->runtime_flags);
+			put_dev = true;
+		}
+	}
+
 	if (info->attrs[NBD_ATTR_SOCKETS]) {
 		struct nlattr *attr;
 		int rem, fd;
@@ -1671,6 +1684,8 @@ out:
 		nbd_connect_reply(info, nbd->index);
 	}
 	nbd_config_put(nbd);
+	if (put_dev)
+		nbd_put(nbd);
 	return ret;
 }
 
@@ -1723,6 +1738,7 @@ static int nbd_genl_reconfigure(struct sk_buff *skb, struct genl_info *info)
 	struct nbd_config *config;
 	int index;
 	int ret = -EINVAL;
+	bool put_dev = false;
 
 	if (!netlink_capable(skb, CAP_SYS_ADMIN))
 		return -EPERM;
@@ -1774,6 +1790,18 @@ static int nbd_genl_reconfigure(struct sk_buff *skb, struct genl_info *info)
 			nla_get_u64(info->attrs[NBD_ATTR_DEAD_CONN_TIMEOUT]);
 		config->dead_conn_timeout *= HZ;
 	}
+	if (info->attrs[NBD_ATTR_CLIENT_FLAGS]) {
+		u64 flags = nla_get_u64(info->attrs[NBD_ATTR_CLIENT_FLAGS]);
+		if (flags & NBD_CFLAG_DESTROY_ON_DISCONNECT) {
+			if (!test_and_set_bit(NBD_DESTROY_ON_DISCONNECT,
+					      &config->runtime_flags))
+				put_dev = true;
+		} else {
+			if (test_and_clear_bit(NBD_DESTROY_ON_DISCONNECT,
+					       &config->runtime_flags))
+				refcount_inc(&nbd->refs);
+		}
+	}
 
 	if (info->attrs[NBD_ATTR_SOCKETS]) {
 		struct nlattr *attr;
@@ -1811,6 +1839,8 @@ out:
 	mutex_unlock(&nbd->config_lock);
 	nbd_config_put(nbd);
 	nbd_put(nbd);
+	if (put_dev)
+		nbd_put(nbd);
 	return ret;
 }
 
