@@ -2808,9 +2808,41 @@ static long calc_cfs_shares(struct cfs_rq *cfs_rq)
 }
 # endif /* CONFIG_SMP */
 
+/*
+ * Signed add and clamp on underflow.
+ *
+ * Explicitly do a load-store to ensure the intermediate value never hits
+ * memory. This allows lockless observations without ever seeing the negative
+ * values.
+ */
+#define add_positive(_ptr, _val) do {                           \
+	typeof(_ptr) ptr = (_ptr);                              \
+	typeof(_val) val = (_val);                              \
+	typeof(*ptr) res, var = READ_ONCE(*ptr);                \
+								\
+	res = var + val;                                        \
+								\
+	if (val < 0 && res > var)                               \
+		res = 0;                                        \
+								\
+	WRITE_ONCE(*ptr, res);                                  \
+} while (0)
+
+/*
+ * XXX we want to get rid of this helper and use the full load resolution.
+ */
+static inline long se_weight(struct sched_entity *se)
+{
+	return scale_load_down(se->load.weight);
+}
+
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
 {
+	unsigned long se_load_avg = se->avg.load_avg;
+	u64 se_load_sum = se_weight(se) * se->avg.load_sum;
+	u64 new_load_sum = scale_load_down(weight) * se->avg.load_sum;
+
 	if (se->on_rq) {
 		/* commit outstanding execution time */
 		if (cfs_rq->curr == se)
@@ -2818,10 +2850,23 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		account_entity_dequeue(cfs_rq, se);
 	}
 
+	se->avg.load_avg = div_u64(new_load_sum,
+			LOAD_AVG_MAX - 1024 + se->avg.period_contrib);
+
 	update_load_set(&se->load, weight);
 
-	if (se->on_rq)
+	if (se->on_rq) {
 		account_entity_enqueue(cfs_rq, se);
+		add_positive(&cfs_rq->runnable_load_avg,
+				(long)(se->avg.load_avg - se_load_avg));
+		add_positive(&cfs_rq->runnable_load_sum,
+				(s64)(new_load_sum - se_load_sum));
+	}
+
+	add_positive(&cfs_rq->avg.load_avg,
+			(long)(se->avg.load_avg - se_load_avg));
+	add_positive(&cfs_rq->avg.load_sum,
+			(s64)(new_load_sum - se_load_sum));
 }
 
 static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
@@ -3097,14 +3142,6 @@ ___update_load_avg(struct sched_avg *sa, unsigned long weight, struct cfs_rq *cf
 }
 
 /*
- * XXX we want to get rid of this helper and use the full load resolution.
- */
-static inline long se_weight(struct sched_entity *se)
-{
-	return scale_load_down(se->load.weight);
-}
-
-/*
  * sched_entity:
  *
  *   load_sum := runnable_sum
@@ -3152,26 +3189,6 @@ __update_load_avg_cfs_rq(u64 now, int cpu, struct cfs_rq *cfs_rq)
 
 	return 0;
 }
-
-/*
- * Signed add and clamp on underflow.
- *
- * Explicitly do a load-store to ensure the intermediate value never hits
- * memory. This allows lockless observations without ever seeing the negative
- * values.
- */
-#define add_positive(_ptr, _val) do {                           \
-	typeof(_ptr) ptr = (_ptr);                              \
-	typeof(_val) val = (_val);                              \
-	typeof(*ptr) res, var = READ_ONCE(*ptr);                \
-								\
-	res = var + val;                                        \
-								\
-	if (val < 0 && res > var)                               \
-		res = 0;                                        \
-								\
-	WRITE_ONCE(*ptr, res);                                  \
-} while (0)
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 /**
