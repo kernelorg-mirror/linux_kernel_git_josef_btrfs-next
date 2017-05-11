@@ -2738,7 +2738,7 @@ static inline long se_runnable(struct sched_entity *se)
 
 #ifdef CONFIG_SMP
 static inline void
-enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+enqueue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 	cfs_rq->runnable_weight += se->runnable_weight;
 
@@ -2747,7 +2747,7 @@ enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 static inline void
-dequeue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+dequeue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 	cfs_rq->runnable_weight -= se->runnable_weight;
 
@@ -2881,12 +2881,23 @@ static long calc_cfs_shares(struct cfs_rq *cfs_rq)
 } while (0)
 
 #ifdef CONFIG_SMP
+static inline void
+__add_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	cfs_rq->avg.load_avg += se->avg.load_avg;
+	cfs_rq->avg.load_sum += se_weight(se) * se->avg.load_sum;
+}
+
+static inline void
+__sub_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
+	sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
+}
+
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight, unsigned long runnable)
 {
-	unsigned long se_load_avg = se->avg.load_avg;
-	u64 se_load_sum = se_weight(se) * se->avg.load_sum;
-	u64 new_load_sum = scale_load_down(weight) * se->avg.load_sum;
 	u32 divider = LOAD_AVG_MAX - 1024 + se->avg.period_contrib;
 
 	if (se->on_rq) {
@@ -2895,27 +2906,22 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			update_curr(cfs_rq);
 
 		account_entity_dequeue(cfs_rq, se);
-		dequeue_entity_load_avg(cfs_rq, se);
+		dequeue_runnable_load_avg(cfs_rq, se);
 	}
-
-	se->avg.load_avg = div_u64(new_load_sum, divider);
-	se->avg.runnable_load_avg =
-		div_u64(scale_load_down(runnable) * se->avg.runnable_load_sum, divider);
+	__sub_load_avg(cfs_rq, se);
 
 	se->runnable_weight = runnable;
 	update_load_set(&se->load, weight);
 
+	se->avg.load_avg = div_u64(se_weight(se) * se->avg.load_sum, divider);
+	se->avg.runnable_load_avg =
+		div_u64(se_runnable(se) * se->avg.runnable_load_sum, divider);
+
+	__add_load_avg(cfs_rq, se);
 	if (se->on_rq) {
-		/* XXX delta accounting for these */
-
 		account_entity_enqueue(cfs_rq, se);
-		enqueue_entity_load_avg(cfs_rq, se);
+		enqueue_runnable_load_avg(cfs_rq, se);
 	}
-
-	add_positive(&cfs_rq->avg.load_avg,
-			(long)(se->avg.load_avg - se_load_avg));
-	add_positive(&cfs_rq->avg.load_sum,
-			(s64)(new_load_sum - se_load_sum));
 }
 #else /* CONFIG_SMP */
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
@@ -3634,8 +3640,7 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
 static void attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 	se->avg.last_update_time = cfs_rq->avg.last_update_time;
-	cfs_rq->avg.load_avg += se->avg.load_avg;
-	cfs_rq->avg.load_sum += se_weight(se) * se->avg.load_sum;
+	__add_load_avg(cfs_rq, se);
 	cfs_rq->avg.util_avg += se->avg.util_avg;
 	cfs_rq->avg.util_sum += se->avg.util_sum;
 
@@ -3654,9 +3659,7 @@ static void attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
  */
 static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-
-	sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
-	sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
+	__sub_load_avg(cfs_rq, se);
 	sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
 	sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
 
@@ -3796,9 +3799,9 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 }
 
 static inline void
-enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+enqueue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
 static inline void
-dequeue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+dequeue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
 static inline void remove_entity_load_avg(struct sched_entity *se) {}
 
 static inline void
@@ -3945,7 +3948,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 */
 	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
 	update_cfs_group(se);
-	enqueue_entity_load_avg(cfs_rq, se);
+	enqueue_runnable_load_avg(cfs_rq, se);
 	account_entity_enqueue(cfs_rq, se);
 
 	if (flags & ENQUEUE_WAKEUP)
@@ -4028,7 +4031,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *     of its group cfs_rq.
 	 */
 	update_load_avg(cfs_rq, se, UPDATE_TG);
-	dequeue_entity_load_avg(cfs_rq, se);
+	dequeue_runnable_load_avg(cfs_rq, se);
 
 	update_stats_dequeue(cfs_rq, se, flags);
 
