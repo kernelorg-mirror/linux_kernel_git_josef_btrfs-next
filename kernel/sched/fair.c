@@ -2884,6 +2884,26 @@ static long calc_cfs_shares(struct cfs_rq *cfs_rq)
 } while (0)
 
 #ifdef CONFIG_SMP
+void reweight_task(struct task_struct *p, int prio)
+{
+	struct sched_entity *se = &p->se;
+	struct cfs_rq *cfs_rq = cfs_rq_of(se);
+	struct load_weight *load = &p->se.load;
+
+	u32 divider = LOAD_AVG_MAX - 1024 + se->avg.period_contrib;
+
+	__sub_load_avg(cfs_rq, se);
+
+	load->weight = scale_load(sched_prio_to_weight[prio]);
+	load->inv_weight = sched_prio_to_wmult[prio];
+
+	se->avg.load_avg = div_u64(se_weight(se) * se->avg.load_sum, divider);
+	se->avg.runnable_load_avg =
+		div_u64(se_runnable(se) * se->avg.runnable_load_sum, divider);
+
+	__add_load_avg(cfs_rq, se);
+}
+
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight, unsigned long runnable)
 {
