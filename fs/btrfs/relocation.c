@@ -3237,6 +3237,8 @@ static int relocate_file_extent_cluster(struct inode *inode,
 				put_page(page);
 				btrfs_delalloc_release_metadata(BTRFS_I(inode),
 							PAGE_SIZE);
+				btrfs_delalloc_release_extents(BTRFS_I(inode),
+							       PAGE_SIZE);
 				ret = -EIO;
 				goto out;
 			}
@@ -3266,6 +3268,7 @@ static int relocate_file_extent_cluster(struct inode *inode,
 		put_page(page);
 
 		index++;
+		btrfs_delalloc_release_extents(BTRFS_I(inode), PAGE_SIZE);
 		balance_dirty_pages_ratelimited(inode->i_mapping);
 		btrfs_throttle(fs_info);
 	}
