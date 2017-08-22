@@ -2726,6 +2726,26 @@ static inline long se_runnable(struct sched_entity *se)
 	WRITE_ONCE(*ptr, res);					\
 } while (0)
 
+/*
+ * Signed add and clamp on underflow.
+ *
+ * Explicitly do a load-store to ensure the intermediate value never hits
+ * memory. This allows lockless observations without ever seeing the negative
+ * values.
+ */
+#define add_positive(_ptr, _val) do {                           \
+	typeof(_ptr) ptr = (_ptr);                              \
+	typeof(_val) val = (_val);                              \
+	typeof(*ptr) res, var = READ_ONCE(*ptr);                \
+								\
+	res = var + val;                                        \
+								\
+	if (val < 0 && res > var)                               \
+		res = 0;                                        \
+								\
+	WRITE_ONCE(*ptr, res);                                  \
+} while (0)
+
 #ifdef CONFIG_SMP
 static inline void
 enqueue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
@@ -2759,7 +2779,30 @@ __sub_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
 	sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
 }
+
+static __always_inline void
+___update_load_avg(struct sched_avg *sa, unsigned long load, unsigned long runnable)
+{
+	u32 divider = LOAD_AVG_MAX - 1024 + sa->period_contrib;
+
+	/*
+	 * Step 2: update *_avg.
+	 */
+	sa->load_avg = div_u64(load * sa->load_sum, divider);
+	sa->runnable_load_avg =	div_u64(runnable * sa->runnable_load_sum, divider);
+	sa->util_avg = sa->util_sum / divider;
+}
+#else /* CONFIG_SMP */
+static inline void
+enqueue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+static inline void
+dequeue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+static inline void
+__add_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+static inline void
+__sub_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
 #endif /* CONFIG_SMP */
+
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 # ifdef CONFIG_SMP
@@ -2891,34 +2934,11 @@ static long calc_group_runnable(struct cfs_rq *cfs_rq, long shares)
 		runnable /= load_avg;
 	return clamp_t(long, runnable, MIN_SHARES, shares);
 }
-# endif /* CONFIG_SMP */
+#endif /* CONFIG_SMP */
 
-/*
- * Signed add and clamp on underflow.
- *
- * Explicitly do a load-store to ensure the intermediate value never hits
- * memory. This allows lockless observations without ever seeing the negative
- * values.
- */
-#define add_positive(_ptr, _val) do {                           \
-	typeof(_ptr) ptr = (_ptr);                              \
-	typeof(_val) val = (_val);                              \
-	typeof(*ptr) res, var = READ_ONCE(*ptr);                \
-								\
-	res = var + val;                                        \
-								\
-	if (val < 0 && res > var)                               \
-		res = 0;                                        \
-								\
-	WRITE_ONCE(*ptr, res);                                  \
-} while (0)
-
-#ifdef CONFIG_SMP
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight, unsigned long runnable)
 {
-	u32 divider = LOAD_AVG_MAX - 1024 + se->avg.period_contrib;
-
 	if (se->on_rq) {
 		/* commit outstanding execution time */
 		if (cfs_rq->curr == se)
@@ -2932,9 +2952,9 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 	se->runnable_weight = runnable;
 	update_load_set(&se->load, weight);
 
-	se->avg.load_avg = div_u64(se_weight(se) * se->avg.load_sum, divider);
-	se->avg.runnable_load_avg =
-		div_u64(se_runnable(se) * se->avg.runnable_load_sum, divider);
+#ifdef CONFIG_SMP
+	___update_load_avg(&se->avg, se_weight(se), se_runnable(se));
+#endif
 
 	__add_load_avg(cfs_rq, se);
 	if (se->on_rq) {
@@ -2942,23 +2962,6 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		enqueue_runnable_load_avg(cfs_rq, se);
 	}
 }
-#else /* CONFIG_SMP */
-static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
-			    unsigned long weight, unsigned long runnable)
-{
-	if (se->on_rq) {
-		/* commit outstanding execution time */
-		if (cfs_rq->curr == se)
-			update_curr(cfs_rq);
-		account_entity_dequeue(cfs_rq, se);
-	}
-
-	update_load_set(&se->load, weight);
-
-	if (se->on_rq)
-		account_entity_enqueue(cfs_rq, se);
-}
-#endif /* CONFIG_SMP */
 
 void reweight_task(struct task_struct *p, int prio)
 {
@@ -3227,19 +3230,6 @@ ___update_load_sum(u64 now, int cpu, struct sched_avg *sa,
 		return 0;
 
 	return 1;
-}
-
-static __always_inline void
-___update_load_avg(struct sched_avg *sa, unsigned long load, unsigned long runnable)
-{
-	u32 divider = LOAD_AVG_MAX - 1024 + sa->period_contrib;
-
-	/*
-	 * Step 2: update *_avg.
-	 */
-	sa->load_avg = div_u64(load * sa->load_sum, divider);
-	sa->runnable_load_avg =	div_u64(runnable * sa->runnable_load_sum, divider);
-	sa->util_avg = sa->util_sum / divider;
 }
 
 /*
@@ -3839,10 +3829,6 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	cfs_rq_util_change(cfs_rq);
 }
 
-static inline void
-enqueue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
-static inline void
-dequeue_runnable_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
 static inline void remove_entity_load_avg(struct sched_entity *se) {}
 
 static inline void
