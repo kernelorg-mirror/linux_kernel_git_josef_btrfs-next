@@ -2719,6 +2719,44 @@ static inline long se_runnable(struct sched_entity *se)
 	return scale_load_down(se->runnable_weight);
 }
 
+/*
+ * Unsigned subtract and clamp on underflow.
+ *
+ * Explicitly do a load-store to ensure the intermediate value never hits
+ * memory. This allows lockless observations without ever seeing the negative
+ * values.
+ */
+#define sub_positive(_ptr, _val) do {				\
+	typeof(_ptr) ptr = (_ptr);				\
+	typeof(*ptr) val = (_val);				\
+	typeof(*ptr) res, var = READ_ONCE(*ptr);		\
+	res = var - val;					\
+	if (res > var)						\
+		res = 0;					\
+	WRITE_ONCE(*ptr, res);					\
+} while (0)
+
+#ifdef CONFIG_SMP
+static inline void
+enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	cfs_rq->runnable_weight += se->runnable_weight;
+
+	cfs_rq->avg.runnable_load_avg += se->avg.runnable_load_avg;
+	cfs_rq->avg.runnable_load_sum += se_runnable(se) * se->avg.runnable_load_sum;
+}
+
+static inline void
+dequeue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	cfs_rq->runnable_weight -= se->runnable_weight;
+
+	sub_positive(&cfs_rq->avg.runnable_load_avg, se->avg.runnable_load_avg);
+	sub_positive(&cfs_rq->avg.runnable_load_sum,
+		     se_runnable(se) * se->avg.runnable_load_sum);
+}
+#endif /* CONFIG_SMP */
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 # ifdef CONFIG_SMP
 /*
@@ -2843,42 +2881,6 @@ static long calc_cfs_shares(struct cfs_rq *cfs_rq)
 } while (0)
 
 #ifdef CONFIG_SMP
-/*
- * Unsigned subtract and clamp on underflow.
- *
- * Explicitly do a load-store to ensure the intermediate value never hits
- * memory. This allows lockless observations without ever seeing the negative
- * values.
- */
-#define sub_positive(_ptr, _val) do {				\
-	typeof(_ptr) ptr = (_ptr);				\
-	typeof(*ptr) val = (_val);				\
-	typeof(*ptr) res, var = READ_ONCE(*ptr);		\
-	res = var - val;					\
-	if (res > var)						\
-		res = 0;					\
-	WRITE_ONCE(*ptr, res);					\
-} while (0)
-
-static inline void
-enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-	cfs_rq->runnable_weight += se->runnable_weight;
-
-	cfs_rq->avg.runnable_load_avg += se->avg.runnable_load_avg;
-	cfs_rq->avg.runnable_load_sum += se_runnable(se) * se->avg.runnable_load_sum;
-}
-
-static inline void
-dequeue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-	cfs_rq->runnable_weight -= se->runnable_weight;
-
-	sub_positive(&cfs_rq->avg.runnable_load_avg, se->avg.runnable_load_avg);
-	sub_positive(&cfs_rq->avg.runnable_load_sum,
-		     se_runnable(se) * se->avg.runnable_load_sum);
-}
-
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight, unsigned long runnable)
 {
@@ -2951,13 +2953,12 @@ static void update_cfs_group(struct sched_entity *se)
 		return;
 
 #ifndef CONFIG_SMP
-	shares = READ_ONCE(gcfs_rq->tg->shares);
+	runnable = shares = READ_ONCE(gcfs_rq->tg->shares);
 
 	if (likely(se->load.weight == shares))
 		return;
 #else
 	shares = calc_cfs_shares(gcfs_rq);
-#endif
 	/*
 	 * The hierarchical runnable load metric is the proportional part
 	 * of this group's runnable_load_avg / load_avg.
@@ -2968,6 +2969,7 @@ static void update_cfs_group(struct sched_entity *se)
 	runnable = shares * gcfs_rq->avg.runnable_load_avg;
 	if (runnable)
 		runnable /= max(gcfs_rq->avg.load_avg, gcfs_rq->avg.runnable_load_avg);
+#endif
 
 	reweight_entity(cfs_rq_of(se), se, shares, runnable);
 }
