@@ -2861,6 +2861,36 @@ static long calc_group_shares(struct cfs_rq *cfs_rq)
 	 */
 	return clamp_t(long, shares, MIN_SHARES, tg_shares);
 }
+
+/*
+ * The runnable shares of this group are calculated as such
+ *
+ *          max(cfs_rq->avg.runnable_load_avg, cfs_rq->runnable_weight)
+ * shares * ------------------------------------------------------------
+ *               max(cfs_rq->avg.load_avg, cfs_rq->load.weight)
+ *
+ * We do this to keep the shares in line with expected load on the cfs_rq.
+ * Consider a cfs_rq that has several tasks wake up on this cfs_rq for the first
+ * time, it's runnable_load_avg is not going to be representative of the actual
+ * load this cfs_rq will now experience, which will bias us agaisnt this cfs_rq.
+ * The weight on the cfs_rq is the immediate effect of having new tasks
+ * enqueue'd onto it which should be used to calculate the new runnable shares.
+ * At the same time we need the actual load_avg to be the lower bounds for the
+ * calculation, to handle when our weight drops quickly from having entities
+ * dequeued.
+ */
+static long calc_group_runnable(struct cfs_rq *cfs_rq, long shares)
+{
+	long load_avg = max(cfs_rq->avg.load_avg,
+			    scale_load_down(cfs_rq->load.weight));
+	long runnable = max(cfs_rq->avg.runnable_load_avg,
+			    scale_load_down(cfs_rq->runnable_weight));
+
+	runnable *= shares;
+	if (load_avg)
+		runnable /= load_avg;
+	return clamp_t(long, runnable, MIN_SHARES, shares);
+}
 # endif /* CONFIG_SMP */
 
 /*
@@ -2942,36 +2972,6 @@ void reweight_task(struct task_struct *p, int prio)
 }
 
 static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
-
-/*
- * The runnable shares of this group are calculated as such
- *
- *          max(cfs_rq->avg.runnable_load_avg, cfs_rq->runnable_weight)
- * shares * ------------------------------------------------------------
- *               max(cfs_rq->avg.load_avg, cfs_rq->load.weight)
- *
- * We do this to keep the shares in line with expected load on the cfs_rq.
- * Consider a cfs_rq that has several tasks wake up on this cfs_rq for the first
- * time, it's runnable_load_avg is not going to be representative of the actual
- * load this cfs_rq will now experience, which will bias us agaisnt this cfs_rq.
- * The weight on the cfs_rq is the immediate effect of having new tasks
- * enqueue'd onto it which should be used to calculate the new runnable shares.
- * At the same time we need the actual load_avg to be the lower bounds for the
- * calculation, to handle when our weight drops quickly from having entities
- * dequeued.
- */
-static long calc_group_runnable(struct cfs_rq *cfs_rq, long shares)
-{
-	long load_avg = max(cfs_rq->avg.load_avg,
-			    scale_load_down(cfs_rq->load.weight));
-	long runnable = max(cfs_rq->avg.runnable_load_avg,
-			    scale_load_down(cfs_rq->runnable_weight));
-
-	runnable *= shares;
-	if (load_avg)
-		runnable /= load_avg;
-	return clamp_t(long, runnable, MIN_SHARES, shares);
-}
 
 /*
  * Recomputes the group entity based on the current state of its group
