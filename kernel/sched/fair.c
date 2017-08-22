@@ -2705,6 +2705,14 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	cfs_rq->nr_running--;
 }
 
+/*
+ * XXX we want to get rid of this helper and use the full load resolution.
+ */
+static inline long se_weight(struct sched_entity *se)
+{
+	return scale_load_down(se->load.weight);
+}
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 # ifdef CONFIG_SMP
 /*
@@ -2828,14 +2836,7 @@ static long calc_cfs_shares(struct cfs_rq *cfs_rq)
 	WRITE_ONCE(*ptr, res);                                  \
 } while (0)
 
-/*
- * XXX we want to get rid of this helper and use the full load resolution.
- */
-static inline long se_weight(struct sched_entity *se)
-{
-	return scale_load_down(se->load.weight);
-}
-
+#ifdef CONFIG_SMP
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
 {
@@ -2868,6 +2869,23 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 	add_positive(&cfs_rq->avg.load_sum,
 			(s64)(new_load_sum - se_load_sum));
 }
+#else /* CONFIG_SMP */
+static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+			    unsigned long weight)
+{
+	if (se->on_rq) {
+		/* commit outstanding execution time */
+		if (cfs_rq->curr == se)
+			update_curr(cfs_rq);
+		account_entity_dequeue(cfs_rq, se);
+	}
+
+	update_load_set(&se->load, weight);
+
+	if (se->on_rq)
+		account_entity_enqueue(cfs_rq, se);
+}
+#endif /* CONFIG_SMP */
 
 static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
 
