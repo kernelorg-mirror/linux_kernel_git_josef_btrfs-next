@@ -2707,11 +2707,16 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 }
 
 /*
- * XXX we want to get rid of this helper and use the full load resolution.
+ * XXX we want to get rid of these helpers and use the full load resolution.
  */
 static inline long se_weight(struct sched_entity *se)
 {
 	return scale_load_down(se->load.weight);
+}
+
+static inline long se_runnable(struct sched_entity *se)
+{
+	return scale_load_down(se->runnable_weight);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -2854,14 +2859,6 @@ static long calc_cfs_shares(struct cfs_rq *cfs_rq)
 		res = 0;					\
 	WRITE_ONCE(*ptr, res);					\
 } while (0)
-
-/*
- * XXX we want to get rid of these helpers and use the full load resolution.
- */
-static inline long se_runnable(struct sched_entity *se)
-{
-	return scale_load_down(se->runnable_weight);
-}
 
 static inline void
 enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
