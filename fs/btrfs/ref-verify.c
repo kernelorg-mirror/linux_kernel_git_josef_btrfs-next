@@ -797,7 +797,7 @@ int btrfs_ref_tree_mod(struct btrfs_root *root, u64 bytenr, u64 num_bytes,
 				rb_erase(&exist->node, &be->refs);
 				kfree(exist);
 			}
-		} else if (!metadata) {
+		} else if (!be->metadata) {
 			exist->num_refs++;
 		} else {
 			printk(KERN_ERR "Attempting to add another ref for an "
