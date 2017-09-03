@@ -797,8 +797,15 @@ int btrfs_ref_tree_mod(struct btrfs_root *root, u64 bytenr, u64 num_bytes,
 				rb_erase(&exist->node, &be->refs);
 				kfree(exist);
 			}
-		} else {
+		} else if (!metadata) {
 			exist->num_refs++;
+		} else {
+			printk(KERN_ERR "Attempting to add another ref for an "
+			       "existing ref on a tree block\n");
+			dump_block_entry(be);
+			dump_ref_action(ra);
+			kfree(ra);
+			goto out_unlock;
 		}
 		kfree(ref);
 	} else {
