@@ -227,7 +227,7 @@ static void update_block_entry(struct btrfs_root *root, struct block_entry *be,
 	be->num_refs++;
 }
 
-#ifdef CONFIG_STACK_TRACE
+#ifdef CONFIG_STACKTRACE
 static void __save_stack_trace(struct ref_action *ra)
 {
 	struct stack_trace stack_trace;
