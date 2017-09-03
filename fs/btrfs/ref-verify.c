@@ -77,6 +77,7 @@ struct block_entry {
 	u64 len;
 	u64 num_refs;
 	int metadata;
+	int from_disk;
 	struct rb_root roots;
 	struct rb_root refs;
 	struct rb_node node;
@@ -317,6 +318,7 @@ static struct block_entry *add_block_entry(struct btrfs_root *root, u64 bytenr,
 
 	be->num_refs = 1;
 	be->metadata = 0;
+	be->from_disk = 0;
 	be->roots = RB_ROOT;
 	be->refs = RB_ROOT;
 	INIT_LIST_HEAD(&be->actions);
@@ -339,17 +341,10 @@ static int add_tree_block(struct btrfs_root *root, u64 parent, u64 bytenr,
 	struct block_entry *be;
 	struct root_entry *re;
 	struct ref_entry *ref = NULL, *exist;
-	struct ref_action *ra;
 
 	ref = kmalloc(sizeof(struct ref_entry), GFP_NOFS);
 	if (!ref)
 		return -ENOMEM;
-
-	ra = kmalloc(sizeof(struct ref_action), GFP_NOFS);
-	if (!ra) {
-		kfree(ref);
-		return -ENOMEM;
-	}
 
 	if (parent)
 		ref->root_objectid = 0;
@@ -360,22 +355,12 @@ static int add_tree_block(struct btrfs_root *root, u64 parent, u64 bytenr,
 	ref->offset = 0;
 	ref->num_refs = 1;
 
-	/*
-	 * Action is tied to the delayed ref actions, so just use
-	 * UPDATE_DELAYED_HEAD to indicate we got this during a scan.
-	 */
-	ra->action = BTRFS_UPDATE_DELAYED_HEAD;
-	ra->root = root->objectid;
-	memcpy(&ra->ref, ref, sizeof(struct ref_entry));
-	ra->trace_len = 0;
-	INIT_LIST_HEAD(&ra->list);
-
 	be = add_block_entry(root, bytenr, fs_info->nodesize, root->objectid);
 	if (IS_ERR(be)) {
 		kfree(ref);
-		kfree(ra);
 		return PTR_ERR(be);
 	}
+	be->from_disk = 1;
 
 	spin_lock(&fs_info->ref_verify_lock);
 	be->metadata = 1;
@@ -390,7 +375,6 @@ static int add_tree_block(struct btrfs_root *root, u64 parent, u64 bytenr,
 		exist->num_refs++;
 		kfree(ref);
 	}
-	list_add_tail(&ra->list, &be->actions);
 	spin_unlock(&fs_info->ref_verify_lock);
 
 	return 0;
@@ -404,7 +388,6 @@ static int process_leaf(struct btrfs_root *root, struct btrfs_path *path,
 	struct block_entry *be;
 	struct ref_entry *ref = NULL, *exist;
 	struct root_entry *re;
-	struct ref_action *ra;
 	u64 bytenr, num_bytes, offset;
 	struct btrfs_key key;
 	int i = 0;
@@ -433,12 +416,7 @@ static int process_leaf(struct btrfs_root *root, struct btrfs_path *path,
 		ref = kmalloc(sizeof(struct ref_entry), GFP_NOFS);
 		if (!ref)
 			return -ENOMEM;
-		ra = kmalloc(sizeof(struct ref_action), GFP_NOFS);
-		if (!ra) {
-			kfree(ref);
-			return -ENOMEM;
-		}
-
+		be->from_disk = 1;
 		if (shared) {
 			ref->root_objectid = 0;
 			ref->parent = leaf->start;
@@ -450,12 +428,6 @@ static int process_leaf(struct btrfs_root *root, struct btrfs_path *path,
 		ref->offset = key.offset -
 			btrfs_file_extent_offset(leaf, fi);
 		ref->num_refs = 1;
-
-		ra->action = BTRFS_UPDATE_DELAYED_HEAD;
-		ra->root = root->objectid;
-		memcpy(&ra->ref, ref, sizeof(struct ref_entry));
-		ra->trace_len;
-		INIT_LIST_HEAD(&ra->list);
 
 		spin_lock(&root->fs_info->ref_verify_lock);
 
@@ -470,7 +442,6 @@ static int process_leaf(struct btrfs_root *root, struct btrfs_path *path,
 			kfree(ref);
 			exist->num_refs++;
 		}
-		list_add_tail(&ra->list, &be->actions);
 		spin_unlock(&root->fs_info->ref_verify_lock);
 	}
 
@@ -653,8 +624,8 @@ static void dump_block_entry(struct block_entry *be)
 	struct rb_node *n;
 
 	printk(KERN_ERR "Dumping block entry [%llu %llu], num_refs %llu, "
-	       "metadata %d\n", be->bytenr, be->len, be->num_refs,
-	       be->metadata);
+	       "metadata %d, from disk %d\n", be->bytenr, be->len, be->num_refs,
+	       be->metadata, be->from_disk);
 
 	for (n = rb_first(&be->refs); n; n = rb_next(n)) {
 		ref = rb_entry(n, struct ref_entry, node);
