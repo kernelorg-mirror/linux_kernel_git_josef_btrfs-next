@@ -243,7 +243,7 @@ static void __save_stack_trace(struct ref_action *ra)
 static void __print_stack_trace(struct ref_action *ra)
 {
 	struct stack_trace trace;
-	if (ra->trace_len) {
+	if (ra->trace_len == 0) {
 		printk(KERN_ERR "  No Stacktrace\n");
 		return;
 	}
