@@ -152,6 +152,7 @@ int btree_lock_page_hook(struct page *page, void *data,
 int btrfs_get_num_tolerated_disk_barrier_failures(u64 flags);
 int __init btrfs_end_io_wq_init(void);
 void btrfs_end_io_wq_exit(void);
+int btrfs_extent_buffer_end_read(struct extent_buffer *eb, int mirror);
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 void btrfs_init_lockdep(void);

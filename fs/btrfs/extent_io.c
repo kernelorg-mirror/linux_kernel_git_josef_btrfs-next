@@ -20,6 +20,7 @@
 #include "locking.h"
 #include "rcu-string.h"
 #include "backref.h"
+#include "disk-io.h"
 
 static struct kmem_cache *extent_state_cache;
 static struct kmem_cache *extent_buffer_cache;
@@ -5379,6 +5380,15 @@ int extent_buffer_uptodate(struct extent_buffer *eb)
 	return test_bit(EXTENT_BUFFER_UPTODATE, &eb->bflags);
 }
 
+static void mark_eb_failed(struct extent_buffer *eb, int failed_mirror)
+{
+	set_bit(EXTENT_BUFFER_READ_ERR, &eb->bflags);
+	eb->read_mirror = failed_mirror;
+	atomic_dec(&eb->io_pages);
+	if (test_and_clear_bit(EXTENT_BUFFER_READAHEAD, &eb->bflags))
+		btree_readahead_hook(eb, -EIO);
+}
+
 static void end_bio_extent_buffer_readpage(struct bio *bio)
 {
 	struct btrfs_io_bio *io_bio = btrfs_io_bio(bio);
@@ -5387,12 +5397,13 @@ static void end_bio_extent_buffer_readpage(struct bio *bio)
 	u64 unlock_start = 0, unlock_len = 0;
 	int mirror_num = io_bio->mirror_num;
 	int uptodate = !bio->bi_status;
-	int i, ret;
+	int i;
 
 	bio_for_each_segment_all(bvec, bio, i) {
 		struct page *page = bvec->bv_page;
 		struct btrfs_eb_info *eb_info;
 		struct extent_buffer *eb;
+		int reads_done;
 
 		eb = (struct extent_buffer *)page->private;
 		if (WARN_ON(!eb))
@@ -5401,41 +5412,33 @@ static void end_bio_extent_buffer_readpage(struct bio *bio)
 		eb_info = eb->eb_info;
 		if (!tree)
 			tree = &eb_info->io_tree;
+		extent_buffer_get(eb);
+		reads_done = atomic_dec_and_test(&eb->io_pages);
 		if (uptodate) {
-			/*
-			 * btree_readpage_end_io_hook doesn't care about
-			 * start/end so just pass 0.  We'll kill this later.
-			 */
-			ret = tree->ops->readpage_end_io_hook(io_bio, 0,
-							      page, 0, 0,
-							      mirror_num);
-			if (ret) {
-				uptodate = 0;
-			} else {
-				u64 start = eb->start;
-				int c, num_pages;
+			u64 start = eb->start;
+			int c, num_pages;
 
-				num_pages = num_extent_pages(eb->start,
-							     eb->len);
-				for (c = 0; c < num_pages; c++) {
-					if (eb->pages[c] == page)
-						break;
-					start += PAGE_SIZE;
-				}
-				clean_io_failure(eb_info->fs_info,
-						 &eb_info->io_failure_tree,
-						 tree, start, page, 0, 0);
+			num_pages = num_extent_pages(eb->start,
+						     eb->len);
+			for (c = 0; c < num_pages; c++) {
+				if (eb->pages[c] == page)
+					break;
+				start += PAGE_SIZE;
 			}
+			clean_io_failure(eb_info->fs_info,
+					 &eb_info->io_failure_tree,
+					 tree, start, page, 0, 0);
 		}
-		/*
-		 * We never fix anything in btree_io_failed_hook.
-		 *
-		 * TODO: rework the io failed hook to not assume we can fix
-		 * anything.
-		 */
+		if (reads_done && btrfs_extent_buffer_end_read(eb, mirror_num))
+			uptodate = 0;
 		if (!uptodate)
-			tree->ops->readpage_io_failed_hook(page, mirror_num);
-
+			mark_eb_failed(eb, mirror_num);
+		if (reads_done) {
+			clear_bit(EXTENT_BUFFER_READING, &eb->bflags);
+			smp_mb__after_atomic();
+			wake_up_bit(&eb->bflags, EXTENT_BUFFER_READING);
+		}
+		free_extent_buffer(eb);
 		if (unlock_start == 0) {
 			unlock_start = eb->start;
 			unlock_len = PAGE_SIZE;
