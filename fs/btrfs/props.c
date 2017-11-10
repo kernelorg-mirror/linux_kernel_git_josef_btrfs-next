@@ -315,7 +315,8 @@ static int inherit_props(struct btrfs_trans_handle *trans,
 			goto out;
 		ret = __btrfs_set_prop(trans, inode, h->xattr_name,
 				       value, strlen(value), 0);
-		btrfs_block_rsv_release(fs_info, trans->block_rsv, num_bytes);
+		btrfs_block_rsv_release(fs_info, trans->block_rsv, num_bytes,
+					NULL);
 		if (ret)
 			goto out;
 	}

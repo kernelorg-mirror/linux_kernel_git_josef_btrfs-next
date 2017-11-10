@@ -448,8 +448,9 @@ struct btrfs_space_info {
 #define	BTRFS_BLOCK_RSV_TRANS		3
 #define	BTRFS_BLOCK_RSV_CHUNK		4
 #define	BTRFS_BLOCK_RSV_DELOPS		5
-#define	BTRFS_BLOCK_RSV_EMPTY		6
-#define	BTRFS_BLOCK_RSV_TEMP		7
+#define BTRFS_BLOCK_RSV_DELREFS		6
+#define	BTRFS_BLOCK_RSV_EMPTY		7
+#define	BTRFS_BLOCK_RSV_TEMP		8
 
 struct btrfs_block_rsv {
 	u64 size;
@@ -790,6 +791,8 @@ struct btrfs_fs_info {
 	struct btrfs_block_rsv chunk_block_rsv;
 	/* block reservation for delayed operations */
 	struct btrfs_block_rsv delayed_block_rsv;
+	/* block reservation for delayed refs */
+	struct btrfs_block_rsv delayed_refs_rsv;
 
 	struct btrfs_block_rsv empty_block_rsv;
 
@@ -2750,8 +2753,9 @@ enum btrfs_flush_state {
 	FLUSH_DELAYED_ITEMS	=	2,
 	FLUSH_DELALLOC		=	3,
 	FLUSH_DELALLOC_WAIT	=	4,
-	ALLOC_CHUNK		=	5,
-	COMMIT_TRANS		=	6,
+	FLUSH_DELAYED_REFS_NR	=	5,
+	ALLOC_CHUNK		=	6,
+	COMMIT_TRANS		=	7,
 };
 
 int btrfs_alloc_data_chunk_ondemand(struct btrfs_inode *inode, u64 bytes);
@@ -2800,9 +2804,16 @@ int btrfs_block_rsv_migrate(struct btrfs_block_rsv *src_rsv,
 int btrfs_cond_migrate_bytes(struct btrfs_fs_info *fs_info,
 			     struct btrfs_block_rsv *dest, u64 num_bytes,
 			     int min_factor);
-void btrfs_block_rsv_release(struct btrfs_fs_info *fs_info,
-			     struct btrfs_block_rsv *block_rsv,
-			     u64 num_bytes);
+u64 btrfs_block_rsv_release(struct btrfs_fs_info *fs_info,
+			    struct btrfs_block_rsv *block_rsv,
+			    u64 num_bytes, u64 *qgroup_to_release);
+void btrfs_delayed_refs_rsv_release(struct btrfs_fs_info *fs_info, int nr);
+void btrfs_update_delayed_refs_rsv(struct btrfs_trans_handle *trans);
+int btrfs_refill_delayed_block_rsv(struct btrfs_fs_info *fs_info, u64 limit,
+				   enum btrfs_reserve_flush_enum flush);
+void btrfs_migrate_to_delayed_block_rsv(struct btrfs_fs_info *fs_info,
+					struct btrfs_block_rsv *src,
+					u64 num_bytes);
 int btrfs_inc_block_group_ro(struct btrfs_fs_info *fs_info,
 			     struct btrfs_block_group_cache *cache);
 void btrfs_dec_block_group_ro(struct btrfs_block_group_cache *cache);

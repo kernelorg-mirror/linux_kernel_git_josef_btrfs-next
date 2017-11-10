@@ -2343,7 +2343,7 @@ again:
 	if (IS_ERR(trans)) {
 		if (!err)
 			btrfs_block_rsv_release(fs_info, rc->block_rsv,
-						num_bytes);
+						num_bytes, NULL);
 		return PTR_ERR(trans);
 	}
 
@@ -2351,7 +2351,7 @@ again:
 		if (num_bytes != rc->merging_rsv_size) {
 			btrfs_end_transaction(trans);
 			btrfs_block_rsv_release(fs_info, rc->block_rsv,
-						num_bytes);
+						num_bytes, NULL);
 			goto again;
 		}
 	}
@@ -4197,7 +4197,7 @@ restart:
 	set_reloc_control(rc);
 
 	backref_cache_cleanup(&rc->backref_cache);
-	btrfs_block_rsv_release(fs_info, rc->block_rsv, (u64)-1);
+	btrfs_block_rsv_release(fs_info, rc->block_rsv, (u64)-1, NULL);
 
 	err = prepare_to_merge(rc, err);
 
@@ -4205,7 +4205,7 @@ restart:
 
 	rc->merge_reloc_tree = 0;
 	unset_reloc_control(rc);
-	btrfs_block_rsv_release(fs_info, rc->block_rsv, (u64)-1);
+	btrfs_block_rsv_release(fs_info, rc->block_rsv, (u64)-1, NULL);
 
 	/* get rid of pinned extents */
 	trans = btrfs_join_transaction(rc->extent_root);
