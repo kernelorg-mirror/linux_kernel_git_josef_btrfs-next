@@ -4802,6 +4802,8 @@ static void btrfs_release_extent_buffer_page(struct extent_buffer *eb)
 		ClearPagePrivate(page);
 		set_page_private(page, 0);
 
+		mod_node_page_state(page_pgdat(page), NR_METADATA_BYTES,
+				    -(long)PAGE_SIZE);
 		/* Once for the page private. */
 		put_page(page);
 
@@ -5081,6 +5083,8 @@ struct extent_buffer *alloc_extent_buffer(struct btrfs_fs_info *fs_info,
 			goto free_eb;
 		}
 		attach_extent_buffer_page(eb, p);
+		mod_node_page_state(page_pgdat(p), NR_METADATA_BYTES,
+				    PAGE_SIZE);
 		eb->pages[i] = p;
 	}
 again:
