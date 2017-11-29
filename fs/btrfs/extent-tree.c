@@ -4893,8 +4893,9 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 {
 	struct reserve_ticket *ticket = NULL;
 	struct btrfs_block_rsv *delayed_rsv = &fs_info->delayed_block_rsv;
+	struct btrfs_block_rsv *delayed_refs_rsv = &fs_info->delayed_refs_rsv;
 	struct btrfs_trans_handle *trans;
-	u64 bytes;
+	u64 bytes, reclaim_bytes = 0;
 
 	trans = (struct btrfs_trans_handle *)current->journal_info;
 	if (trans)
@@ -4926,21 +4927,27 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 		return -ENOSPC;
 
 	spin_lock(&delayed_rsv->lock);
-	if (delayed_rsv->size > bytes)
-		bytes = 0;
-	else
-		bytes -= delayed_rsv->size;
+	reclaim_bytes += delayed_rsv->reserved;
 	spin_unlock(&delayed_rsv->lock);
 
-	if (percpu_counter_compare(&space_info->total_bytes_pinned,
-				   bytes) < 0) {
-		return -ENOSPC;
-	}
+	spin_lock(&delayed_refs_rsv->lock);
+	reclaim_bytes += delayed_refs_rsv->reserved;
+	spin_unlock(&delayed_refs_rsv->lock);
+	if (reclaim_bytes >= bytes)
+		goto commit;
+	bytes -= reclaim_bytes;
 
+	printk(KERN_ERR "reclaim bytes is %llu, bytes is %llu\n", (unsigned long long)reclaim_bytes,
+	       (unsigned long long)bytes);
+	if (percpu_counter_compare(&space_info->total_bytes_pinned,
+				   bytes) < 0)
+		return -ENOSPC;
 commit:
 	trans = btrfs_join_transaction(fs_info->extent_root);
-	if (IS_ERR(trans))
+	if (IS_ERR(trans)) {
+		printk(KERN_ERR "huh join transaciton failed?\n");
 		return -ENOSPC;
+	}
 
 	return btrfs_commit_transaction(trans);
 }
@@ -5005,6 +5012,8 @@ static void flush_space(struct btrfs_fs_info *fs_info,
 		break;
 	case COMMIT_TRANS:
 		ret = may_commit_transaction(fs_info, space_info);
+		if (ret)
+			printk(KERN_ERR "may_commit_transaction returned %d\n", ret);
 		break;
 	default:
 		ret = -ENOSPC;
@@ -8021,6 +8030,15 @@ out:
 	return ret;
 }
 
+static void dump_block_rsv(struct btrfs_block_rsv *rsv)
+{
+	spin_lock(&rsv->lock);
+	printk(KERN_ERR "%d: size %llu reserved %llu\n",
+	       rsv->type, (unsigned long long)rsv->size,
+	       (unsigned long long)rsv->reserved);
+	spin_unlock(&rsv->lock);
+}
+
 static void dump_space_info(struct btrfs_fs_info *fs_info,
 			    struct btrfs_space_info *info, u64 bytes,
 			    int dump_block_groups)
@@ -8031,7 +8049,7 @@ static void dump_space_info(struct btrfs_fs_info *fs_info,
 	spin_lock(&info->lock);
 	btrfs_info(fs_info, "space_info %llu has %llu free, is %sfull",
 		   info->flags,
-		   info->total_bytes - btrfs_space_info_used(info, true),
+		   info->total_bytes - btrfs_space_info_used(info, false),
 		   info->full ? "" : "not ");
 	btrfs_info(fs_info,
 		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu",
@@ -8039,6 +8057,12 @@ static void dump_space_info(struct btrfs_fs_info *fs_info,
 		info->bytes_reserved, info->bytes_may_use,
 		info->bytes_readonly);
 	spin_unlock(&info->lock);
+
+	dump_block_rsv(&fs_info->global_block_rsv);
+	dump_block_rsv(&fs_info->trans_block_rsv);
+	dump_block_rsv(&fs_info->chunk_block_rsv);
+	dump_block_rsv(&fs_info->delayed_block_rsv);
+	dump_block_rsv(&fs_info->delayed_refs_rsv);
 
 	if (!dump_block_groups)
 		return;
