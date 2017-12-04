@@ -2959,6 +2959,8 @@ int open_ctree(struct super_block *sb,
 		goto fail_alloc;
 	}
 
+	if (features & BTRFS_FEATURE_INCOMPAT_MIXED_GROUPS)
+		printk(KERN_ERR "WE HAVE MIXED BGS\n");
 	/*
 	 * Needn't use the lock because there is no other task which will
 	 * update the flag.

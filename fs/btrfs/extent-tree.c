@@ -84,6 +84,9 @@ static void space_info_add_new_bytes(struct btrfs_fs_info *fs_info,
 static void space_info_add_old_bytes(struct btrfs_fs_info *fs_info,
 				     struct btrfs_space_info *space_info,
 				     u64 num_bytes);
+static int may_commit_transaction(struct btrfs_fs_info *fs_info,
+				  struct btrfs_space_info *space_info,
+				  u64 bytes);
 
 static noinline int
 block_group_cache_done(struct btrfs_block_group_cache *cache)
@@ -4326,30 +4329,21 @@ commit_trans:
 				btrfs_wait_ordered_roots(fs_info, U64_MAX, 0,
 							 (u64)-1);
 			}
-
-			trans = btrfs_join_transaction(root);
-			if (IS_ERR(trans))
-				return PTR_ERR(trans);
-			if (have_pinned_space >= 0 ||
-			    test_bit(BTRFS_TRANS_HAVE_FREE_BGS,
-				     &trans->transaction->flags) ||
-			    need_commit > 0) {
-				ret = btrfs_commit_transaction(trans);
-				if (ret)
-					return ret;
-				/*
-				 * The cleaner kthread might still be doing iput
-				 * operations. Wait for it to finish so that
-				 * more space is released.
-				 */
-				mutex_lock(&fs_info->cleaner_delayed_iput_mutex);
-				mutex_unlock(&fs_info->cleaner_delayed_iput_mutex);
-				goto again;
-			} else {
-				btrfs_end_transaction(trans);
-			}
+			ret = may_commit_transaction(fs_info, data_sinfo,
+						     bytes);
+			if (ret && ret != -ENOSPC)
+				return ret;
+			/*
+			 * The cleaner kthread might still be doing iput
+			 * operations. Wait for it to finish so that
+			 * more space is released.
+			 */
+			mutex_lock(&fs_info->cleaner_delayed_iput_mutex);
+			mutex_unlock(&fs_info->cleaner_delayed_iput_mutex);
+			goto again;
 		}
 
+		printk(KERN_ERR "check data space enospc\n");
 		trace_btrfs_space_reservation(fs_info,
 					      "space_info:enospc",
 					      data_sinfo->flags, bytes, 1);
@@ -4889,27 +4883,30 @@ struct reserve_ticket {
  * will return -ENOSPC.
  */
 static int may_commit_transaction(struct btrfs_fs_info *fs_info,
-				  struct btrfs_space_info *space_info)
+				  struct btrfs_space_info *space_info,
+				  u64 bytes)
 {
 	struct reserve_ticket *ticket = NULL;
 	struct btrfs_block_rsv *delayed_rsv = &fs_info->delayed_block_rsv;
 	struct btrfs_block_rsv *delayed_refs_rsv = &fs_info->delayed_refs_rsv;
 	struct btrfs_trans_handle *trans;
-	u64 bytes, reclaim_bytes = 0;
+	u64 reclaim_bytes = 0;
 
 	trans = (struct btrfs_trans_handle *)current->journal_info;
 	if (trans)
 		return -EAGAIN;
 
-	spin_lock(&space_info->lock);
-	if (!list_empty(&space_info->priority_tickets))
-		ticket = list_first_entry(&space_info->priority_tickets,
-					  struct reserve_ticket, list);
-	else if (!list_empty(&space_info->tickets))
-		ticket = list_first_entry(&space_info->tickets,
-					  struct reserve_ticket, list);
-	bytes = (ticket) ? ticket->bytes : 0;
-	spin_unlock(&space_info->lock);
+	if (!bytes) {
+		spin_lock(&space_info->lock);
+		if (!list_empty(&space_info->priority_tickets))
+			ticket = list_first_entry(&space_info->priority_tickets,
+						  struct reserve_ticket, list);
+		else if (!list_empty(&space_info->tickets))
+			ticket = list_first_entry(&space_info->tickets,
+						  struct reserve_ticket, list);
+		bytes = (ticket) ? ticket->bytes : 0;
+		spin_unlock(&space_info->lock);
+	}
 
 	if (!bytes)
 		return 0;
@@ -4923,8 +4920,10 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	 * See if there is some space in the delayed insertion reservation for
 	 * this reservation.
 	 */
-	if (space_info != delayed_rsv->space_info)
+	if (space_info != delayed_rsv->space_info) {
+		printk(KERN_ERR "space info doesn't match %lu %lu\n", space_info->flags, delayed_rsv->space_info->flags);
 		return -ENOSPC;
+	}
 
 	spin_lock(&delayed_rsv->lock);
 	reclaim_bytes += delayed_rsv->reserved;
@@ -4988,12 +4987,16 @@ static void flush_space(struct btrfs_fs_info *fs_info,
 				state == FLUSH_DELALLOC_WAIT);
 		break;
 	case FLUSH_DELAYED_REFS_NR:
+	case FLUSH_DELAYED_REFS:
 		trans = btrfs_join_transaction(root);
 		if (IS_ERR(trans)) {
 			ret = PTR_ERR(trans);
 			break;
 		}
-		nr = calc_reclaim_items_nr(fs_info, num_bytes);
+		if (state == FLUSH_DELAYED_REFS_NR)
+			nr = calc_reclaim_items_nr(fs_info, num_bytes);
+		else
+			nr = 0;
 		btrfs_run_delayed_refs(trans, nr);
 		btrfs_end_transaction(trans);
 		break;
@@ -5011,7 +5014,7 @@ static void flush_space(struct btrfs_fs_info *fs_info,
 			ret = 0;
 		break;
 	case COMMIT_TRANS:
-		ret = may_commit_transaction(fs_info, space_info);
+		ret = may_commit_transaction(fs_info, space_info, 0);
 		if (ret)
 			printk(KERN_ERR "may_commit_transaction returned %d\n", ret);
 		break;
