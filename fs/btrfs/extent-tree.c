@@ -4329,21 +4329,30 @@ commit_trans:
 				btrfs_wait_ordered_roots(fs_info, U64_MAX, 0,
 							 (u64)-1);
 			}
-			ret = may_commit_transaction(fs_info, data_sinfo,
-						     bytes);
-			if (ret && ret != -ENOSPC)
-				return ret;
-			/*
-			 * The cleaner kthread might still be doing iput
-			 * operations. Wait for it to finish so that
-			 * more space is released.
-			 */
-			mutex_lock(&fs_info->cleaner_delayed_iput_mutex);
-			mutex_unlock(&fs_info->cleaner_delayed_iput_mutex);
-			goto again;
+
+			trans = btrfs_join_transaction(root);
+			if (IS_ERR(trans))
+				return PTR_ERR(trans);
+			if (have_pinned_space >= 0 ||
+			    test_bit(BTRFS_TRANS_HAVE_FREE_BGS,
+				     &trans->transaction->flags) ||
+			    need_commit > 0) {
+				ret = btrfs_commit_transaction(trans);
+				if (ret)
+					return ret;
+				/*
+				 * The cleaner kthread might still be doing iput
+				 * operations. Wait for it to finish so that
+				 * more space is released.
+				 */
+				mutex_lock(&fs_info->cleaner_delayed_iput_mutex);
+				mutex_unlock(&fs_info->cleaner_delayed_iput_mutex);
+				goto again;
+			} else {
+				btrfs_end_transaction(trans);
+			}
 		}
 
-		printk(KERN_ERR "check data space enospc\n");
 		trace_btrfs_space_reservation(fs_info,
 					      "space_info:enospc",
 					      data_sinfo->flags, bytes, 1);
@@ -4354,7 +4363,7 @@ commit_trans:
 				      data_sinfo->flags, bytes, 1);
 	spin_unlock(&data_sinfo->lock);
 
-	return ret;
+	return 0;
 }
 
 int btrfs_check_data_free_space(struct inode *inode,
@@ -4891,6 +4900,7 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	struct btrfs_block_rsv *delayed_refs_rsv = &fs_info->delayed_refs_rsv;
 	struct btrfs_trans_handle *trans;
 	u64 reclaim_bytes = 0;
+	bool do_commit = true;
 
 	trans = (struct btrfs_trans_handle *)current->journal_info;
 	if (trans)
@@ -4921,8 +4931,8 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	 * this reservation.
 	 */
 	if (space_info != delayed_rsv->space_info) {
-		printk(KERN_ERR "space info doesn't match %lu %lu\n", space_info->flags, delayed_rsv->space_info->flags);
-		return -ENOSPC;
+		do_commit = false;
+		goto commit;
 	}
 
 	spin_lock(&delayed_rsv->lock);
@@ -4940,7 +4950,7 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	       (unsigned long long)bytes);
 	if (percpu_counter_compare(&space_info->total_bytes_pinned,
 				   bytes) < 0)
-		return -ENOSPC;
+		do_commit = false;
 commit:
 	trans = btrfs_join_transaction(fs_info->extent_root);
 	if (IS_ERR(trans)) {
@@ -4948,6 +4958,11 @@ commit:
 		return -ENOSPC;
 	}
 
+	if (!do_commit &&
+	    !test_bit(BTRFS_TRANS_HAVE_FREE_BGS, &trans->transaction->flags)) {
+		btrfs_end_transaction(trans);
+		return -ENOSPC;
+	}
 	return btrfs_commit_transaction(trans);
 }
 
