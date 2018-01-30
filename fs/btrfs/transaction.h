@@ -124,6 +124,7 @@ struct btrfs_trans_handle {
 	bool reloc_reserved;
 	bool sync;
 	bool dirty;
+	bool sb_write;
 	struct btrfs_root *root;
 	struct btrfs_fs_info *fs_info;
 	struct list_head new_bgs;

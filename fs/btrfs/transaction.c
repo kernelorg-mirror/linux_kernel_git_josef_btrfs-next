@@ -484,6 +484,7 @@ start_transaction(struct btrfs_root *root, unsigned int num_items,
 	u64 num_bytes = 0;
 	u64 qgroup_reserved = 0;
 	bool reloc_reserved = false;
+	bool sb_write = false;
 	int ret;
 
 	/* Send isn't supposed to start transactions. */
@@ -544,8 +545,15 @@ again:
 	 * If we are ATTACH, it means we just want to catch the current
 	 * transaction and commit it, so we needn't do sb_start_intwrite(). 
 	 */
-	if (type & __TRANS_FREEZABLE)
-		sb_start_intwrite(fs_info->sb);
+	if (type & __TRANS_FREEZABLE) {
+		/* Fuck people who use this stupid fucking option. */
+		if (btrfs_test_opt(fs_info, FLUSHONCOMMIT)) {
+			sb_write = true;
+			sb_start_write(fs_info->sb);
+		} else {
+			sb_start_intwrite(fs_info->sb);
+		}
+	}
 
 	if (may_wait_transaction(fs_info, type))
 		wait_current_trans(fs_info);
@@ -572,6 +580,7 @@ again:
 
 	h->type = type;
 	h->can_flush_pending_bgs = true;
+	h->sb_write = sb_write;
 	INIT_LIST_HEAD(&h->new_bgs);
 
 	smp_mb();
@@ -598,8 +607,12 @@ got_it:
 	return h;
 
 join_fail:
-	if (type & __TRANS_FREEZABLE)
-		sb_end_intwrite(fs_info->sb);
+	if (type & __TRANS_FREEZABLE) {
+		if (sb_write)
+			sb_end_write(fs_info->sb);
+		else
+			sb_end_intwrite(fs_info->sb);
+	}
 	kmem_cache_free(btrfs_trans_handle_cachep, h);
 alloc_fail:
 	if (num_bytes)
@@ -1924,8 +1937,11 @@ static inline int btrfs_start_delalloc_flush(struct btrfs_fs_info *fs_info)
 	 * from already being in a transaction and our join_transaction doesn't
 	 * have to re-take the fs freeze lock.
 	 */
-	if (btrfs_test_opt(fs_info, FLUSHONCOMMIT))
+	if (btrfs_test_opt(fs_info, FLUSHONCOMMIT)) {
+		down_read(&fs_info->sb->s_umount);
 		writeback_inodes_sb(fs_info->sb, WB_REASON_SYNC);
+		up_read(&fs_info->sb->s_umount);
+	}
 	return 0;
 }
 
@@ -2293,8 +2309,12 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	btrfs_put_transaction(cur_trans);
 	btrfs_put_transaction(cur_trans);
 
-	if (trans->type & __TRANS_FREEZABLE)
-		sb_end_intwrite(fs_info->sb);
+	if (trans->type & __TRANS_FREEZABLE) {
+		if (trans->sb_write)
+			sb_end_write(fs_info->sb);
+		else
+			sb_end_intwrite(fs_info->sb);
+	}
 
 	trace_btrfs_transaction_commit(trans->root);
 

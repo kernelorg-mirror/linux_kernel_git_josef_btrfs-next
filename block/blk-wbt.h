@@ -10,6 +10,11 @@
 
 #include "blk-stat.h"
 
+enum rq_qos_id {
+	RQ_QOS_WBT,
+	RQ_QOS_CGROUP,
+};
+
 enum wbt_flags {
 	WBT_TRACKED		= 1,	/* write, tracked for throttling */
 	WBT_READ		= 2,	/* read */
@@ -29,6 +34,30 @@ enum {
 enum {
 	WBT_STATE_ON_DEFAULT	= 1,
 	WBT_STATE_ON_MANUAL	= 2,
+};
+
+enum {
+	/*
+	 * Default setting, we'll scale up (to 75% of QD max) or down (min 1)
+	 * from here depending on device stats
+	 */
+	RWB_DEF_DEPTH	= 16,
+
+	/*
+	 * 100msec window
+	 */
+	RWB_WINDOW_NSEC		= 100 * 1000 * 1000ULL,
+
+	/*
+	 * Disregard stats, if we don't meet this minimum
+	 */
+	RWB_MIN_WRITE_SAMPLES	= 3,
+
+	/*
+	 * If we have this number of consecutive windows with not enough
+	 * information to scale up or down, scale up.
+	 */
+	RWB_UNKNOWN_BUMP	= 5,
 };
 
 static inline void wbt_clear_state(struct blk_issue_stat *stat)
@@ -61,41 +90,91 @@ struct rq_wait {
 	atomic_t inflight;
 };
 
+struct rq_qos {
+	struct rq_qos_ops *ops;
+	struct request_queue *q;
+	enum rq_qos_id id;
+	struct rq_qos *next;
+};
+
+struct rq_qos_ops {
+	enum wbt_flags (*throttle)(struct rq_qos *, struct bio *,
+				   spinlock_t *);
+	void (*issue)(struct rq_qos *, struct blk_issue_stat *);
+	void (*requeue)(struct rq_qos *, struct blk_issue_stat *);
+	void (*done)(struct rq_qos *, struct blk_issue_stat *);
+	void (*done_bio)(struct rq_qos *, struct bio *);
+	void (*cleanup)(struct rq_qos *, enum wbt_flags);
+	void (*exit)(struct rq_qos *);
+};
+
+struct rq_depth {
+	unsigned int max_depth;
+
+	int scale_step;
+	bool scaled_max;
+
+	unsigned int queue_depth;
+
+	unsigned long min_lat_nsec;
+};
+
 struct rq_wb {
+	struct blk_stat_callback *cb;
+
 	/*
 	 * Settings that govern how we throttle
 	 */
 	unsigned int wb_background;		/* background writeback */
 	unsigned int wb_normal;			/* normal writeback */
-	unsigned int wb_max;			/* max throughput writeback */
-	int scale_step;
-	bool scaled_max;
 
-	short enable_state;			/* WBT_STATE_* */
+	unsigned long last_issue;		/* last non-throttled issue */
+	unsigned long last_comp;		/* last non-throttled comp */
 
 	/*
 	 * Number of consecutive periods where we don't have enough
 	 * information to make a firm scale up/down decision.
 	 */
 	unsigned int unknown_cnt;
-
 	u64 win_nsec;				/* default window size */
 	u64 cur_win_nsec;			/* current window size */
 
-	struct blk_stat_callback *cb;
+	short enable_state;			/* WBT_STATE_* */
 
 	s64 sync_issue;
 	void *sync_cookie;
 
 	unsigned int wc;
-	unsigned int queue_depth;
-
-	unsigned long last_issue;		/* last non-throttled issue */
-	unsigned long last_comp;		/* last non-throttled comp */
-	unsigned long min_lat_nsec;
-	struct request_queue *queue;
+	struct rq_qos rqos;
 	struct rq_wait rq_wait[WBT_NUM_RWQ];
+	struct rq_depth rq_depth;
 };
+
+static inline struct rq_wb *RQWB(struct rq_qos *rqos)
+{
+	return container_of(rqos, struct rq_wb, rqos);
+}
+
+static inline struct rq_qos *rq_qos_id(struct request_queue *q,
+				       enum rq_qos_id id)
+{
+	struct rq_qos *rqos;
+	for (rqos = q->rq_qos; rqos; rqos = rqos->next) {
+		if (rqos->id == id)
+			break;
+	}
+	return rqos;
+}
+
+static inline struct rq_qos *wbt_rq_qos(struct request_queue *q)
+{
+	return rq_qos_id(q, RQ_QOS_WBT);
+}
+
+static inline struct rq_qos *blkcg_rq_qos(struct request_queue *q)
+{
+	return rq_qos_id(q, RQ_QOS_CGROUP);
+}
 
 static inline unsigned int wbt_inflight(struct rq_wb *rwb)
 {
@@ -107,21 +186,39 @@ static inline unsigned int wbt_inflight(struct rq_wb *rwb)
 	return ret;
 }
 
+static inline void rq_wait_init(struct rq_wait *rq_wait)
+{
+	atomic_set(&rq_wait->inflight, 0);
+	init_waitqueue_head(&rq_wait->wait);
+}
+
+static inline void rq_qos_add(struct request_queue *q, struct rq_qos *rqos)
+{
+	rqos->next = q->rq_qos;
+	q->rq_qos = rqos;
+}
+
+int blkcg_qos_init(struct request_queue *q);
 #ifdef CONFIG_BLK_WBT
 
-void __wbt_done(struct rq_wb *, enum wbt_flags);
-void wbt_done(struct rq_wb *, struct blk_issue_stat *);
-enum wbt_flags wbt_wait(struct rq_wb *, struct bio *, spinlock_t *);
+void rq_qos_cleanup(struct request_queue *, enum wbt_flags);
+void rq_qos_done(struct request_queue *, struct blk_issue_stat *);
+void rq_qos_issue(struct request_queue *, struct blk_issue_stat *);
+void rq_qos_requeue(struct request_queue *, struct blk_issue_stat *);
+void rq_qos_done_bio(struct request_queue *q, struct bio *bio);
+enum wbt_flags rq_qos_throttle(struct request_queue *, struct bio *, spinlock_t *);
+void rq_qos_exit(struct request_queue *);
+
 int wbt_init(struct request_queue *);
-void wbt_exit(struct request_queue *);
-void wbt_update_limits(struct rq_wb *);
-void wbt_requeue(struct rq_wb *, struct blk_issue_stat *);
-void wbt_issue(struct rq_wb *, struct blk_issue_stat *);
+void wbt_update_limits(struct request_queue *);
 void wbt_disable_default(struct request_queue *);
 void wbt_enable_default(struct request_queue *);
 
-void wbt_set_queue_depth(struct rq_wb *, unsigned int);
-void wbt_set_write_cache(struct rq_wb *, bool);
+u64 wbt_get_min_lat(struct request_queue *q);
+void wbt_set_min_lat(struct request_queue *q, u64 val);
+
+void wbt_set_queue_depth(struct request_queue *, unsigned int);
+void wbt_set_write_cache(struct request_queue *, bool);
 
 u64 wbt_default_latency_nsec(struct request_queue *);
 

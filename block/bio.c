@@ -32,6 +32,7 @@
 
 #include <trace/events/block.h>
 #include "blk.h"
+#include "blk-wbt.h"
 
 /*
  * Test patch to inline a certain number of bi_io_vec's inside the bio
@@ -1797,6 +1798,8 @@ again:
 		bio_clear_flag(bio, BIO_TRACE_COMPLETION);
 	}
 
+	if (bio->bi_disk)
+		rq_qos_done_bio(bio->bi_disk->queue, bio);
 	blk_throtl_bio_endio(bio);
 	/* release cgroup info */
 	bio_uninit(bio);
