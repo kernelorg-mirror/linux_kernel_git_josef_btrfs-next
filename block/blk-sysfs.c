@@ -904,6 +904,8 @@ int blk_register_queue(struct gendisk *disk)
 
 	wbt_enable_default(q);
 
+	blk_iolatency_init(q);
+
 	blk_throtl_register_queue(q);
 
 	if (q->request_fn || (q->mq_ops && q->elevator)) {

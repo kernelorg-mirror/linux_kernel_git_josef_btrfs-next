@@ -409,4 +409,10 @@ static inline void blk_queue_bounce(struct request_queue *q, struct bio **bio)
 
 extern void blk_drain_queue(struct request_queue *q);
 
+#ifdef CONFIG_BLK_CGROUP_IOLATENCY
+extern void blk_iolatency_init(struct request_queue *q);
+#else
+static inline void blk_iolatency_init(struct request_queue *q) { }
+#endif
+
 #endif /* BLK_INTERNAL_H */
