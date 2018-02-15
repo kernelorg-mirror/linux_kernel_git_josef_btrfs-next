@@ -515,39 +515,62 @@ static inline bool wbt_should_throttle(struct rq_wb *rwb, struct bio *bio)
 	return true;
 }
 
+static enum wbt_flags bio_to_wbt_flags(struct rq_wb *rwb, struct bio *bio)
+{
+	enum wbt_flags flags = 0;
+
+	if (bio_op(bio) == REQ_OP_READ) {
+		flags = WBT_READ;
+	} else if (wbt_should_throttle(rwb, bio)) {
+		if (current_is_kswapd())
+			flags |= WBT_KSWAPD;
+		flags |= WBT_TRACKED;
+	}
+	return flags;
+}
+
+static void wbt_cleanup(struct rq_qos *rqos, struct bio *bio)
+{
+	struct rq_wb *rwb = RQWB(rqos);
+	enum wbt_flags flags = bio_to_wbt_flags(rwb, bio);
+	__wbt_done(rqos, flags);
+}
+
 /*
  * Returns true if the IO request should be accounted, false if not.
  * May sleep, if we have exceeded the writeback limits. Caller can pass
  * in an irq held spinlock, if it holds one when calling this function.
  * If we do sleep, we'll release and re-grab it.
  */
-static enum wbt_flags wbt_wait(struct rq_qos *rqos, struct bio *bio,
-			       spinlock_t *lock)
+static void wbt_wait(struct rq_qos *rqos, struct bio *bio, spinlock_t *lock)
 {
 	struct rq_wb *rwb = RQWB(rqos);
-	unsigned int ret = 0;
+	bool read = false;
 
 	if (!rwb_enabled(rwb))
-		return 0;
+		return;
 
 	if (bio_op(bio) == REQ_OP_READ)
-		ret = WBT_READ;
+		read = true;
 
 	if (!wbt_should_throttle(rwb, bio)) {
-		if (ret & WBT_READ)
+		if (read)
 			wb_timestamp(rwb, &rwb->last_issue);
-		return ret;
+		return;
 	}
 
 	__wbt_wait(rwb, bio->bi_opf, lock);
 
 	if (!blk_stat_is_active(rwb->cb))
 		rwb_arm_timer(rwb);
+}
 
-	if (current_is_kswapd())
-		ret |= WBT_KSWAPD;
-
-	return ret | WBT_TRACKED;
+static void wbt_track(struct rq_qos *rqos, struct blk_issue_stat *stat,
+		      struct bio *bio)
+{
+	struct rq_wb *rwb = RQWB(rqos);
+	enum wbt_flags flags = bio_to_wbt_flags(rwb, bio);
+	wbt_stat_track(stat, flags);
 }
 
 void wbt_issue(struct rq_qos *rqos, struct blk_issue_stat *stat)
@@ -664,9 +687,10 @@ EXPORT_SYMBOL_GPL(wbt_disable_default);
 static struct rq_qos_ops wbt_rqos_ops = {
 	.throttle = wbt_wait,
 	.issue = wbt_issue,
+	.track = wbt_track,
 	.requeue = wbt_requeue,
 	.done = wbt_done,
-	.cleanup = __wbt_done,
+	.cleanup = wbt_cleanup,
 	.exit = wbt_exit,
 };
 

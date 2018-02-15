@@ -25,12 +25,12 @@ struct rq_qos {
 };
 
 struct rq_qos_ops {
-	enum wbt_flags (*throttle)(struct rq_qos *, struct bio *,
-				   spinlock_t *);
+	void (*throttle)(struct rq_qos *, struct bio *, spinlock_t *);
+	void (*track)(struct rq_qos *, struct blk_issue_stat *, struct bio *);
 	void (*issue)(struct rq_qos *, struct blk_issue_stat *);
 	void (*requeue)(struct rq_qos *, struct blk_issue_stat *);
 	void (*done)(struct rq_qos *, struct blk_issue_stat *);
-	void (*cleanup)(struct rq_qos *, enum wbt_flags);
+	void (*cleanup)(struct rq_qos *, struct bio *);
 	void (*exit)(struct rq_qos *);
 };
 
@@ -82,10 +82,12 @@ void rq_depth_scale_up(struct rq_depth *rqd);
 void rq_depth_scale_down(struct rq_depth *rqd, bool hard_throttle);
 bool rq_depth_calc_max_depth(struct rq_depth *rqd);
 
-void rq_qos_cleanup(struct request_queue *, enum wbt_flags);
+void rq_qos_cleanup(struct request_queue *, struct bio *);
 void rq_qos_done(struct request_queue *, struct blk_issue_stat *);
 void rq_qos_issue(struct request_queue *, struct blk_issue_stat *);
 void rq_qos_requeue(struct request_queue *, struct blk_issue_stat *);
-enum wbt_flags rq_qos_throttle(struct request_queue *, struct bio *, spinlock_t *);
+void rq_qos_throttle(struct request_queue *, struct bio *, spinlock_t *);
+void rq_qos_track(struct request_queue *q, struct blk_issue_stat *stat,
+		  struct bio *bio);
 void rq_qos_exit(struct request_queue *);
 #endif
