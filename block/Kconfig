@@ -149,6 +149,17 @@ config BLK_WBT
 	dynamically on an algorithm loosely based on CoDel, factoring in
 	the realtime performance of the disk.
 
+config BLK_CGROUP_QOS
+	bool "Enable support for latency based cgroup io protection"
+	default n
+	---help---
+	Enabling this option enables the .qos interface for io throttling.
+	The io controller will attempt to maintain average io latencies below
+	the configured latency target, throttling anybody with a higher latency
+	target than the victimized group.
+
+	Note, this is an experimental interface and could be changed someday.
+
 config BLK_WBT_SQ
 	bool "Single queue writeback throttling"
 	default n
