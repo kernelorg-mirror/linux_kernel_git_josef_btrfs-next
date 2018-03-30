@@ -954,12 +954,27 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 
 	hlist_for_each_entry_rcu(blkg, &blkcg->blkg_list, blkcg_node) {
 		const char *dname;
+		char *buf;
 		struct blkg_rwstat rwstat;
 		u64 rbytes, wbytes, rios, wios;
+		size_t size = seq_get_buf(sf, &buf), count = 0, total = 0;
+		int i;
 
 		dname = blkg_dev_name(blkg);
 		if (!dname)
 			continue;
+
+		/*
+		 * Hooray string manipulation, count is the size written NOT
+		 * INCLUDING THE \0, so size is now count+1 less than what we
+		 * had before, but we want to start writing the next bit from
+		 * the \0 so we only add count to buf.
+		 */
+		count = snprintf(buf, size, "%s ", dname);
+		if (count >= size)
+			continue;
+		buf += count;
+		size -= count + 1;
 
 		spin_lock_irq(blkg->q->queue_lock);
 
@@ -975,9 +990,40 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 
 		spin_unlock_irq(blkg->q->queue_lock);
 
-		if (rbytes || wbytes || rios || wios)
-			seq_printf(sf, "%s rbytes=%llu wbytes=%llu rios=%llu wios=%llu\n",
-				   dname, rbytes, wbytes, rios, wios);
+		if (rbytes || wbytes || rios || wios) {
+			total += count;
+			count = snprintf(buf, size,
+					 "rbytes=%llu wbytes=%llu rios=%llu wios=%llu",
+					 rbytes, wbytes, rios, wios);
+			if (count >= size)
+				continue;
+			buf += count;
+			total += count;
+			size -= count + 1;
+		}
+
+		mutex_lock(&blkcg_pol_mutex);
+		for (i = 0; i < BLKCG_MAX_POLS; i++) {
+			struct blkcg_policy *pol = blkcg_policy[i];
+
+			if (!blkg->pd[i] || !pol->pd_stat_fn)
+				continue;
+
+			count = pol->pd_stat_fn(blkg->pd[i], buf, size);
+			if (count >= size)
+				continue;
+			buf += count;
+			total += count;
+			size -= count + 1;
+		}
+		mutex_unlock(&blkcg_pol_mutex);
+		if (total) {
+			count = snprintf(buf, size, "\n");
+			if (count >= size)
+				continue;
+			total += count;
+			seq_commit(sf, total);
+		}
 	}
 
 	rcu_read_unlock();
