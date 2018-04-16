@@ -5458,6 +5458,30 @@ out:
 	return ret;
 }
 
+int mem_cgroup_try_charge_delay(struct page *page, struct mm_struct *mm,
+			  gfp_t gfp_mask, struct mem_cgroup **memcgp,
+			  bool compound)
+{
+	struct mem_cgroup *memcg;
+	struct block_device *bdev;
+	int ret;
+
+	ret = mem_cgroup_try_charge(page, mm, gfp_mask, memcgp, compound);
+	memcg = *memcgp;
+
+	if (!(gfp_mask & __GFP_IO) || !memcg)
+		return ret;
+
+	if (atomic_read(&memcg->css.cgroup->congestion_count) &&
+	    has_usable_swap()) {
+		map_swap_page(page, &bdev);
+
+		blkcg_schedule_throttle(bdev_get_queue(bdev), true);
+	}
+
+	return ret;
+}
+
 /**
  * mem_cgroup_commit_charge - commit a page charge
  * @page: page to charge
