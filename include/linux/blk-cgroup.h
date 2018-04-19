@@ -136,6 +136,12 @@ struct blkcg_gq {
 	struct blkg_policy_data		*pd[BLKCG_MAX_POLS];
 
 	struct rcu_head			rcu_head;
+
+	atomic_t			use_delay;
+	atomic64_t			delay_nsec;
+	atomic64_t			delay_start;
+	u64				last_delay;
+	int				last_use;
 };
 
 typedef struct blkcg_policy_data *(blkcg_pol_alloc_cpd_fn)(gfp_t gfp);
@@ -734,6 +740,45 @@ static inline bool blkcg_bio_issue_check(struct request_queue *q,
 	return !throtl;
 }
 
+static inline void blkcg_use_delay(struct blkcg_gq *blkg)
+{
+	if (atomic_inc_and_test(&blkg->use_delay))
+		atomic_inc(&blkg->blkcg->css.cgroup->congestion_count);
+}
+
+static inline int blkcg_unuse_delay(struct blkcg_gq *blkg)
+{
+	int old = atomic_read(&blkg->use_delay);
+
+	if (old == 0)
+		return 0;
+
+	while (old) {
+		int cur = atomic_cmpxchg(&blkg->use_delay, old, old - 1);
+		if (cur == old)
+			break;
+		cur = old;
+	}
+
+	if (old == 0)
+		return 0;
+	if (old == 1)
+		atomic_dec(&blkg->blkcg->css.cgroup->congestion_count);
+	return 1;
+}
+
+static inline void blkcg_clear_delay(struct blkcg_gq *blkg)
+{
+	int old = atomic_read(&blkg->use_delay);
+	if (!old)
+		return;
+	if (atomic_cmpxchg(&blkg->use_delay, old, 0) == old)
+		atomic_dec(&blkg->blkcg->css.cgroup->congestion_count);
+}
+
+void blkcg_add_delay(struct blkcg_gq *blkg, u64 now, u64 delta);
+void blkcg_schedule_throttle(struct request_queue *q, bool use_memdelay);
+void blkcg_maybe_throttle_current(void);
 #else	/* CONFIG_BLK_CGROUP */
 
 struct blkcg {
@@ -783,6 +828,9 @@ static inline struct request_list *blk_rq_rl(struct request *rq) { return &rq->q
 
 static inline bool blkcg_bio_issue_check(struct request_queue *q,
 					 struct bio *bio) { return true; }
+static void blkcg_add_delay(struct blkcg_gq *blkg, u64 now, u64 delta) { }
+static void blkcg_schedule_throttle(struct request_queue *q, bool use_memdelay) { }
+static inline void blkcg_maybe_throttle_current(void) {}
 
 #define blk_queue_for_each_rl(rl, q)	\
 	for ((rl) = &(q)->root_rl; (rl); (rl) = NULL)

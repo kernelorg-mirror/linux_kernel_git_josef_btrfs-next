@@ -27,6 +27,7 @@
 #include <linux/atomic.h>
 #include <linux/ctype.h>
 #include <linux/blk-cgroup.h>
+#include <linux/tracehook.h>
 #include "blk.h"
 
 #define MAX_KEY_LEN 100
@@ -1334,6 +1335,13 @@ static void blkcg_bind(struct cgroup_subsys_state *root_css)
 	mutex_unlock(&blkcg_pol_mutex);
 }
 
+static void blkcg_exit(struct task_struct *tsk)
+{
+	if (tsk->throttle_queue)
+		blk_put_queue(tsk->throttle_queue);
+	tsk->throttle_queue = NULL;
+}
+
 struct cgroup_subsys io_cgrp_subsys = {
 	.css_alloc = blkcg_css_alloc,
 	.css_offline = blkcg_css_offline,
@@ -1343,6 +1351,7 @@ struct cgroup_subsys io_cgrp_subsys = {
 	.dfl_cftypes = blkcg_files,
 	.legacy_cftypes = blkcg_legacy_files,
 	.legacy_name = "blkio",
+	.exit = blkcg_exit,
 #ifdef CONFIG_MEMCG
 	/*
 	 * This ensures that, if available, memcg is automatically enabled
@@ -1593,3 +1602,129 @@ out_unlock:
 	mutex_unlock(&blkcg_pol_register_mutex);
 }
 EXPORT_SYMBOL_GPL(blkcg_policy_unregister);
+
+static void blkcg_scale_delay(struct blkcg_gq *blkg, u64 now)
+{
+	u64 old = atomic64_read(&blkg->delay_start);
+
+	if (old + NSEC_PER_SEC <= now &&
+	    atomic64_cmpxchg(&blkg->delay_start, old, now) == old) {
+		u64 cur = atomic64_read(&blkg->delay_nsec);
+		u64 sub = min_t(u64, blkg->last_delay, now - old);
+		int cur_use = atomic_read(&blkg->use_delay);
+
+		if (cur_use < blkg->last_use)
+			sub = max_t(u64, sub, blkg->last_delay >> 1);
+
+		/* This shouldn't happen, but handle it anyway. */
+		if (unlikely(cur < sub)) {
+			atomic64_set(&blkg->delay_nsec, 0);
+			blkg->last_delay = 0;
+		} else {
+			atomic64_sub(sub, &blkg->delay_nsec);
+			blkg->last_delay = cur - sub;
+		}
+		blkg->last_use = cur_use;
+	}
+}
+
+static void blkcg_maybe_throttle_blkg(struct blkcg_gq *blkg, bool use_memdelay)
+{
+	u64 now = ktime_to_ns(ktime_get());
+	u64 exp;
+	u64 delay_nsec = 0;
+	int tok;
+
+	while (blkg->parent) {
+		if (atomic_read(&blkg->use_delay)) {
+			blkcg_scale_delay(blkg, now);
+			delay_nsec = max_t(u64, delay_nsec,
+					   atomic64_read(&blkg->delay_nsec));
+		}
+		blkg = blkg->parent;
+	}
+
+	if (!delay_nsec)
+		return;
+
+	/* Let's not sleep for all eternity if we've amassed a huge delay. */
+	delay_nsec = min_t(u64, delay_nsec, NSEC_PER_SEC);
+
+	/*
+	 * TODO: the use_memdelay flag is going to be for the upcoming psi stuff
+	 * that hasn't landed upstream yet.  Once that stuff is in place we need
+	 * to do a psi_memstall_enter/leave if memdelay is set.
+	 */
+
+	exp = ktime_add_ns(now, delay_nsec);
+	tok = io_schedule_prepare();
+	do {
+		__set_current_state(TASK_KILLABLE);
+		if (!schedule_hrtimeout(&exp, HRTIMER_MODE_ABS))
+			break;
+	} while (!fatal_signal_pending(current));
+	io_schedule_finish(tok);
+}
+
+void blkcg_maybe_throttle_current(void)
+{
+	struct request_queue *q = current->throttle_queue;
+	struct cgroup_subsys_state *css;
+	struct blkcg *blkcg;
+	struct blkcg_gq *blkg;
+	bool use_memdelay = current->use_memdelay;
+
+	if (!q)
+		return;
+
+	current->throttle_queue = NULL;
+	current->use_memdelay = false;
+
+	rcu_read_lock();
+	css = kthread_blkcg();
+	if (css)
+		blkcg = css_to_blkcg(css);
+	else
+		blkcg = css_to_blkcg(task_css(current, io_cgrp_id));
+
+	if (!blkcg)
+		goto out;
+	blkg = blkg_lookup(blkcg, q);
+	if (!blkg)
+		goto out;
+	blkg_get(blkg);
+	rcu_read_unlock();
+	blk_put_queue(q);
+
+	blkcg_maybe_throttle_blkg(blkg, use_memdelay);
+	blkg_put(blkg);
+	return;
+out:
+	rcu_read_unlock();
+	blk_put_queue(q);
+}
+EXPORT_SYMBOL_GPL(blkcg_maybe_throttle_current);
+
+void blkcg_schedule_throttle(struct request_queue *q, bool use_memdelay)
+{
+	if (unlikely(current->flags & PF_KTHREAD))
+		return;
+
+	if (!blk_get_queue(q))
+		return;
+
+	if (current->throttle_queue)
+		blk_put_queue(current->throttle_queue);
+	current->throttle_queue = q;
+	if (use_memdelay)
+		current->use_memdelay = use_memdelay;
+	set_notify_resume(current);
+}
+EXPORT_SYMBOL_GPL(blkcg_schedule_throttle);
+
+void blkcg_add_delay(struct blkcg_gq *blkg, u64 now, u64 delta)
+{
+	blkcg_scale_delay(blkg, now);
+	atomic64_add(delta, &blkg->delay_nsec);
+}
+EXPORT_SYMBOL_GPL(blkcg_add_delay);

@@ -1099,6 +1099,11 @@ struct task_struct {
 	unsigned int			memcg_nr_pages_over_high;
 #endif
 
+#ifdef CONFIG_BLK_CGROUP
+	struct request_queue		*throttle_queue;
+	bool				use_memdelay;
+#endif
+
 #ifdef CONFIG_UPROBES
 	struct uprobe_task		*utask;
 #endif
