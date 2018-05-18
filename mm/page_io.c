@@ -339,6 +339,14 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 		goto out;
 	}
 	bio->bi_opf = REQ_OP_WRITE | REQ_SWAP | wbc_to_write_flags(wbc);
+	if (page->mem_cgroup) {
+		struct cgroup_subsys_state *blkcg_css;
+
+		blkcg_css = cgroup_get_e_css(page->mem_cgroup->css.cgroup,
+					     &io_cgrp_subsys);
+		bio_associate_blkcg(bio, blkcg_css);
+		css_put(blkcg_css);
+	}
 	count_swpout_vm_event(page);
 	set_page_writeback(page);
 	unlock_page(page);
