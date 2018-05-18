@@ -32,6 +32,7 @@
 
 #include <trace/events/block.h>
 #include "blk.h"
+#include "blk-rq-qos.h"
 
 /*
  * Test patch to inline a certain number of bi_io_vec's inside the bio
@@ -1780,6 +1781,9 @@ again:
 
 	if (WARN_ONCE(bio->bi_next, "driver left bi_next not NULL"))
 		bio->bi_next = NULL;
+
+	if (bio->bi_disk)
+		rq_qos_done_bio(bio->bi_disk->queue, bio);
 
 	/*
 	 * Need to have a real endio function for chained bios, otherwise
