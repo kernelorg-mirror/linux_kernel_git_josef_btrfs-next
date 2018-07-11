@@ -9211,8 +9211,9 @@ struct inode *btrfs_alloc_inode(struct super_block *sb)
 	struct btrfs_fs_info *fs_info = btrfs_sb(sb);
 	struct btrfs_inode *ei;
 	struct inode *inode;
+	gfp_t flags = (current->journal_info) ? GFP_NOFS : GFP_KERNEL;
 
-	ei = kmem_cache_alloc(btrfs_inode_cachep, GFP_KERNEL);
+	ei = kmem_cache_alloc(btrfs_inode_cachep, flags);
 	if (!ei)
 		return NULL;
 

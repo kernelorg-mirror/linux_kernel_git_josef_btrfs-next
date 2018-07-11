@@ -68,7 +68,12 @@ static struct inode *__lookup_free_space_inode(struct btrfs_root *root,
 	btrfs_disk_key_to_cpu(&location, &disk_key);
 	btrfs_release_path(path);
 
+	/* We need this set so that we use GFP_NOFS when allocating our inode. */
+	if (current->journal_info == NULL)
+		current->journal_info = BTRFS_TRANS_STUB;
 	inode = btrfs_iget(fs_info->sb, &location, root, NULL);
+	if (current->journal_info == BTRFS_TRANS_STUB)
+		current->journal_info = NULL;
 	if (IS_ERR(inode))
 		return inode;
 	if (is_bad_inode(inode)) {
