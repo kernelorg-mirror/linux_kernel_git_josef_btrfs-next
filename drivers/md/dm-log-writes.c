@@ -629,6 +629,8 @@ static void log_writes_dtr(struct dm_target *ti)
 		   !atomic_read(&lc->pending_blocks));
 	kthread_stop(lc->log_kthread);
 
+	invalidate_bdev(lc->logdev->bdev);
+	invalidate_bdev(lc->dev->bdev);
 	WARN_ON(!list_empty(&lc->logging_blocks));
 	WARN_ON(!list_empty(&lc->unflushed_blocks));
 	dm_put_device(ti, lc->dev);
