@@ -5781,10 +5781,11 @@ static int btrfs_inode_rsv_refill(struct btrfs_inode *inode,
 {
 	struct btrfs_root *root = inode->root;
 	struct btrfs_block_rsv *block_rsv = &inode->block_rsv;
-	u64 num_bytes = 0;
+	u64 num_bytes = 0, last = 0;
 	u64 qgroup_num_bytes = 0;
 	int ret = -ENOSPC;
 
+again:
 	spin_lock(&block_rsv->lock);
 	if (block_rsv->reserved < block_rsv->size)
 		num_bytes = block_rsv->size - block_rsv->reserved;
@@ -5795,6 +5796,13 @@ static int btrfs_inode_rsv_refill(struct btrfs_inode *inode,
 
 	if (num_bytes == 0)
 		return 0;
+
+	/*
+	 * If our reservation size hasn't changed since the last time we tried
+	 * to make an allocation we can just bail.
+	 */
+	if (last && last == num_bytes)
+		return -ENOSPC;
 
 	ret = btrfs_qgroup_reserve_meta_prealloc(root, qgroup_num_bytes, true);
 	if (ret)
@@ -5809,8 +5817,22 @@ static int btrfs_inode_rsv_refill(struct btrfs_inode *inode,
 		spin_lock(&block_rsv->lock);
 		block_rsv->qgroup_rsv_reserved += qgroup_num_bytes;
 		spin_unlock(&block_rsv->lock);
-	} else
+	} else {
 		btrfs_qgroup_free_meta_prealloc(root, qgroup_num_bytes);
+
+		/*
+		 * If we are fragmented we can end up with a lot of outstanding
+		 * extents which will make our size be much larger than our
+		 * reserved amount.  If we happen to try to do a reservation
+		 * here that may result in us trying to do a pretty hefty
+		 * reservation, which we may not need once delalloc flushing
+		 * happens.  If this is the case try and do the reserve again.
+		 */
+		if (flush == BTRFS_RESERVE_FLUSH_ALL) {
+			last = num_bytes;
+			goto again;
+		}
+	}
 	return ret;
 }
 
