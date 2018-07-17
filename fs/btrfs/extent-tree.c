@@ -4657,6 +4657,7 @@ again:
 			goto out;
 	} else {
 		ret = 1;
+		space_info->max_extent_size = 0;
 	}
 
 	space_info->force_alloc = CHUNK_ALLOC_NO_FORCE;
@@ -8199,10 +8200,16 @@ static int __btrfs_free_reserved_extent(struct btrfs_fs_info *fs_info,
 	if (pin)
 		pin_down_extent(fs_info, cache, start, len, 1);
 	else {
+		struct btrfs_space_info *space_info = cache->space_info;
+
 		if (btrfs_test_opt(fs_info, DISCARD))
 			ret = btrfs_discard_extent(fs_info, start, len, NULL);
 		btrfs_add_free_space(cache, start, len);
 		btrfs_free_reserved_bytes(cache, len, delalloc);
+
+		spin_lock(&space_info->lock);
+		space_info->max_extent_size = 0;
+		spin_unlock(&space_info->lock);
 		trace_btrfs_reserved_extent_free(fs_info, start, len);
 	}
 
