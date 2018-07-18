@@ -1918,15 +1918,6 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	btrfs_trans_release_metadata(trans);
 	trans->block_rsv = NULL;
 
-	/* make a pass through all the delayed refs we have so far
-	 * any runnings procs may add more while we are here
-	 */
-	ret = btrfs_run_delayed_refs(trans, 0);
-	if (ret) {
-		btrfs_end_transaction(trans);
-		return ret;
-	}
-
 	cur_trans = trans->transaction;
 
 	/*
@@ -1937,12 +1928,6 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	smp_wmb();
 
 	btrfs_create_pending_block_groups(trans);
-
-	ret = btrfs_run_delayed_refs(trans, 0);
-	if (ret) {
-		btrfs_end_transaction(trans);
-		return ret;
-	}
 
 	if (!test_bit(BTRFS_TRANS_DIRTY_BG_RUN, &cur_trans->flags)) {
 		int run_it = 0;
@@ -2013,6 +1998,15 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	} else {
 		spin_unlock(&fs_info->trans_lock);
 	}
+
+	/*
+	 * We are now the only one in the commit area, we can run delayed refs
+	 * without hitting a bunch of lock contention from a lot of people
+	 * trying to commit the transaction at once.
+	 */
+	ret = btrfs_run_delayed_refs(trans, 0);
+	if (ret)
+		goto cleanup_transaction;
 
 	extwriter_counter_dec(cur_trans, trans->type);
 
