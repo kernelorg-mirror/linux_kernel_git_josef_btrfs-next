@@ -8050,6 +8050,15 @@ out:
 	return ret;
 }
 
+static void dump_block_rsv(struct btrfs_block_rsv *rsv)
+{
+	spin_lock(&rsv->lock);
+	printk(KERN_ERR "%d: size %llu reserved %llu\n",
+	       rsv->type, (unsigned long long)rsv->size,
+	       (unsigned long long)rsv->reserved);
+	spin_unlock(&rsv->lock);
+}
+
 static void dump_space_info(struct btrfs_fs_info *fs_info,
 			    struct btrfs_space_info *info, u64 bytes,
 			    int dump_block_groups)
@@ -8068,6 +8077,12 @@ static void dump_space_info(struct btrfs_fs_info *fs_info,
 		info->bytes_reserved, info->bytes_may_use,
 		info->bytes_readonly);
 	spin_unlock(&info->lock);
+
+	dump_block_rsv(&fs_info->global_block_rsv);
+	dump_block_rsv(&fs_info->trans_block_rsv);
+	dump_block_rsv(&fs_info->chunk_block_rsv);
+	dump_block_rsv(&fs_info->delayed_block_rsv);
+	dump_block_rsv(&fs_info->delayed_refs_rsv);
 
 	if (!dump_block_groups)
 		return;
