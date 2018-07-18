@@ -4897,6 +4897,7 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	struct btrfs_trans_handle *trans;
 	u64 bytes;
 	u64 reclaim_bytes = 0;
+	bool do_commit = true;
 
 	trans = (struct btrfs_trans_handle *)current->journal_info;
 	if (trans)
@@ -4924,8 +4925,10 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	 * See if there is some space in the delayed insertion reservation for
 	 * this reservation.
 	 */
-	if (space_info != delayed_rsv->space_info)
-		return -ENOSPC;
+	if (space_info != delayed_rsv->space_info) {
+		do_commit = false;
+		goto commit;
+	}
 
 	spin_lock(&delayed_rsv->lock);
 	reclaim_bytes += delayed_rsv->reserved;
@@ -4939,15 +4942,18 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	bytes -= reclaim_bytes;
 
 	if (percpu_counter_compare(&space_info->total_bytes_pinned,
-				   bytes) < 0) {
-		return -ENOSPC;
-	}
-
+				   bytes) < 0)
+		do_commit = false;
 commit:
 	trans = btrfs_join_transaction(fs_info->extent_root);
 	if (IS_ERR(trans))
 		return -ENOSPC;
 
+	if (!do_commit &&
+	    !test_bit(BTRFS_TRANS_HAVE_FREE_BGS, &trans->transaction->flags)) {
+		btrfs_end_transaction(trans);
+		return -ENOSPC;
+	}
 	return btrfs_commit_transaction(trans);
 }
 
