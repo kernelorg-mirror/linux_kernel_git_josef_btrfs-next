@@ -823,11 +823,11 @@ enum zswap_get_swap_ret {
 static int zswap_get_swap_cache_page(swp_entry_t entry,
 				struct page **retpage)
 {
-	bool page_was_allocated;
+	bool created;
 
-	*retpage = __read_swap_cache_async(entry, GFP_KERNEL,
-			NULL, 0, &page_was_allocated);
-	if (page_was_allocated)
+	*retpage = find_or_create_swap_cache(entry, GFP_KERNEL,
+					     NULL, 0, &created);
+	if (created)
 		return ZSWAP_SWAPCACHE_NEW;
 	if (!*retpage)
 		return ZSWAP_SWAPCACHE_FAIL;
