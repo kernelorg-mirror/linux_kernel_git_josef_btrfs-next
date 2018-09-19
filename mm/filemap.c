@@ -1282,6 +1282,28 @@ int __lock_page_killable(struct page *__page)
 }
 EXPORT_SYMBOL_GPL(__lock_page_killable);
 
+enum mmap_sem_state {
+	MMAP_SEM_DROPPED,
+	MMAP_SEM_HELD,
+	MMAP_SEM_CANT_DROP,
+};
+
+static inline enum mmap_sem_state maybe_drop_mmap_sem(struct mm_struct *mm,
+						      unsigned int flags)
+{
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		/*
+		 * CAUTION! In this case, mmap_sem is not released
+		 * even though return 0.
+		 */
+		if (flags & FAULT_FLAG_RETRY_NOWAIT)
+			return MMAP_SEM_CANT_DROP;
+		up_read(&mm->mmap_sem);
+		return MMAP_SEM_DROPPED;
+	}
+	return MMAP_SEM_HELD;
+}
+
 /*
  * Return values:
  * 1 - page is locked; mmap_sem is still held.
@@ -1296,33 +1318,30 @@ EXPORT_SYMBOL_GPL(__lock_page_killable);
 int __lock_page_or_retry(struct page *page, struct mm_struct *mm,
 			 unsigned int flags)
 {
-	if (flags & FAULT_FLAG_ALLOW_RETRY) {
-		/*
-		 * CAUTION! In this case, mmap_sem is not released
-		 * even though return 0.
-		 */
-		if (flags & FAULT_FLAG_RETRY_NOWAIT)
-			return 0;
+	enum mmap_sem_state mmap_sem_held = maybe_drop_mmap_sem(mm, flags);
 
-		up_read(&mm->mmap_sem);
+	if (mmap_sem_held == MMAP_SEM_CANT_DROP)
+		return 0;
+
+	if (mmap_sem_held == MMAP_SEM_DROPPED) {
 		if (flags & FAULT_FLAG_KILLABLE)
 			wait_on_page_locked_killable(page);
 		else
 			wait_on_page_locked(page);
 		return 0;
-	} else {
-		if (flags & FAULT_FLAG_KILLABLE) {
-			int ret;
-
-			ret = __lock_page_killable(page);
-			if (ret) {
-				up_read(&mm->mmap_sem);
-				return 0;
-			}
-		} else
-			__lock_page(page);
-		return 1;
 	}
+
+	if (flags & FAULT_FLAG_KILLABLE) {
+		int ret;
+
+		ret = __lock_page_killable(page);
+		if (ret) {
+			up_read(&mm->mmap_sem);
+			return 0;
+		}
+	} else
+		__lock_page(page);
+	return 1;
 }
 
 /**
@@ -2492,6 +2511,7 @@ static void do_async_mmap_readahead(struct vm_area_struct *vma,
 vm_fault_t filemap_fault(struct vm_fault *vmf)
 {
 	int error;
+	struct mm_struct *mm = vmf->vma->vm_mm;
 	struct file *file = vmf->vma->vm_file;
 	struct address_space *mapping = file->f_mapping;
 	struct file_ra_state *ra = &file->f_ra;
@@ -2500,6 +2520,7 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	pgoff_t max_off;
 	struct page *page;
 	vm_fault_t ret = 0;
+	enum mmap_sem_state mmap_sem_held = MMAP_SEM_HELD;
 
 	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
 	if (unlikely(offset >= max_off))
@@ -2527,7 +2548,7 @@ retry_find:
 			goto no_cached_page;
 	}
 
-	if (!lock_page_or_retry(page, vmf->vma->vm_mm, vmf->flags)) {
+	if (!lock_page_or_retry(page, mm, vmf->flags)) {
 		put_page(page);
 		return ret | VM_FAULT_RETRY;
 	}
@@ -2563,6 +2584,20 @@ retry_find:
 
 no_cached_page:
 	/*
+	 * Holding the mmap_sem while reading in the page can end up with weird
+	 * priority inversions.  Consider process A who has a higher IO priority
+	 * than process B and is currently causing B to have slower than normal
+	 * IO.  Process A then decides to read /proc/<pidof B>/cmdline, and now
+	 * we're blocked for a while because we're reading this page.  Avoid
+	 * this problem by dropping the mmap_sem when populating the page in
+	 * page cache, and then return up to higher layers so that the fault can
+	 * be redone.
+	 */
+	mmap_sem_held = maybe_drop_mmap_sem(mm, vmf->flags);
+	if (mmap_sem_held == MMAP_SEM_CANT_DROP)
+		return ret | VM_FAULT_RETRY;
+
+	/*
 	 * We're only likely to ever get here if MADV_RANDOM is in
 	 * effect.
 	 */
@@ -2573,8 +2608,14 @@ no_cached_page:
 	 * In the unlikely event that someone removed it in the
 	 * meantime, we'll just come back here and read it again.
 	 */
-	if (error >= 0)
+	if (error >= 0) {
+		if (mmap_sem_held == MMAP_SEM_DROPPED)
+			return ret | VM_FAULT_RETRY;
 		goto retry_find;
+	}
+
+	if (mmap_sem_held == MMAP_SEM_DROPPED)
+		up_read(&mm->mmap_sem);
 
 	/*
 	 * An error return from page_cache_read can result if the
@@ -2586,6 +2627,10 @@ no_cached_page:
 	return VM_FAULT_SIGBUS;
 
 page_not_uptodate:
+	mmap_sem_held = maybe_drop_mmap_sem(mm, vmf->flags);
+	if (mmap_sem_held == MMAP_SEM_CANT_DROP)
+		return ret | VM_FAULT_RETRY;
+
 	/*
 	 * Umm, take care of errors if the page isn't up-to-date.
 	 * Try to re-read it _once_. We do this synchronously,
@@ -2601,8 +2646,14 @@ page_not_uptodate:
 	}
 	put_page(page);
 
-	if (!error || error == AOP_TRUNCATED_PAGE)
+	if (!error || error == AOP_TRUNCATED_PAGE) {
+		if (mmap_sem_held == MMAP_SEM_DROPPED)
+			return ret | VM_FAULT_RETRY;
 		goto retry_find;
+	}
+
+	if (mmap_sem_held == MMAP_SEM_DROPPED)
+		up_read(&mm->mmap_sem);
 
 	/* Things didn't work out. Return zero to tell the mm layer so. */
 	shrink_readahead_size_eio(file, ra);
