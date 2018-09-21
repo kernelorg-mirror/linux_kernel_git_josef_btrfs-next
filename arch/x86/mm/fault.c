@@ -1230,6 +1230,7 @@ void do_user_addr_fault(struct pt_regs *regs,
 			unsigned long hw_error_code,
 			unsigned long address)
 {
+	struct vm_fault vmf = {};
 	unsigned long sw_error_code;
 	struct vm_area_struct *vma;
 	struct task_struct *tsk;
@@ -1420,7 +1421,8 @@ good_area:
 	 * userland). The return to userland is identified whenever
 	 * FAULT_FLAG_USER|FAULT_FLAG_KILLABLE are both set in flags.
 	 */
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault_cacheable(&vmf);
 	major |= fault & VM_FAULT_MAJOR;
 
 	/*
@@ -1436,6 +1438,7 @@ good_area:
 			if (!fatal_signal_pending(tsk))
 				goto retry;
 		}
+		vm_fault_cleanup(&vmf);
 
 		/* User mode? Just return to handle the fatal exception */
 		if (flags & FAULT_FLAG_USER)
@@ -1446,6 +1449,7 @@ good_area:
 		return;
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		mm_fault_error(regs, sw_error_code, address, fault);
