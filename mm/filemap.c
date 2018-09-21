@@ -2366,7 +2366,7 @@ out:
 EXPORT_SYMBOL(generic_file_read_iter);
 
 #ifdef CONFIG_MMU
-static struct file *maybe_unlock_mmap_for_io(struct vm_area_struct *vma, int flags)
+struct file *maybe_unlock_mmap_for_io(struct vm_area_struct *vma, int flags)
 {
 	if ((flags & (FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_RETRY_NOWAIT)) == FAULT_FLAG_ALLOW_RETRY) {
 		struct file *file;
@@ -2377,6 +2377,7 @@ static struct file *maybe_unlock_mmap_for_io(struct vm_area_struct *vma, int fla
 	}
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(maybe_unlock_mmap_for_io);
 
 /**
  * page_cache_read - adds requested page to the page cache if not already there
