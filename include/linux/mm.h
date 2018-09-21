@@ -370,6 +370,11 @@ struct vm_fault {
 					 * next time we loop through the fault
 					 * handler for faster lookup.
 					 */
+	struct file *file;		/* ->page_mkwrite handlers that support
+					 * dropping the mmap_sem can't touch
+					 * vmf->vma, so have to use vmf->file to
+					 * get the file.
+					 */
 	/* These three entries are valid only while holding ptl lock */
 	pte_t *pte;			/* Pointer to pte entry matching
 					 * the 'address'. NULL if the page
@@ -2395,6 +2400,9 @@ extern vm_fault_t filemap_fault(struct vm_fault *vmf);
 extern void filemap_map_pages(struct vm_fault *vmf,
 		pgoff_t start_pgoff, pgoff_t end_pgoff);
 extern vm_fault_t filemap_page_mkwrite(struct vm_fault *vmf);
+typedef vm_fault_t (page_mkwrite_cb)(struct vm_fault *vmf);
+extern vm_fault_t filemap_page_mkwrite_nommapsem(struct vm_fault *vmf,
+						 page_mkwrite_cb *mkwrite);
 
 /* mm/page-writeback.c */
 int __must_check write_one_page(struct page *page);

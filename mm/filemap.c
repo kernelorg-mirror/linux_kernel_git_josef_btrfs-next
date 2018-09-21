@@ -2833,6 +2833,98 @@ out:
 	return ret;
 }
 
+static inline bool initialised_page_valid(struct vm_fault *vmf,
+					  struct page *page)
+{
+	struct inode *inode = file_inode(vmf->vma->vm_file);
+
+	/*
+	 * Make sure the page is marked dirty from our last loop through and
+	 * hasn't been truncated out from underneath us.
+	 */
+	if ((page->mapping != inode->i_mapping) ||
+	    (page_offset(page) >= i_size_read(inode)) ||
+	     !PageDirty(page))
+		return false;
+	return true;
+}
+
+/**
+ * filemap_page_mkwrite_nommap_sem - handle dropping the mmap_sem and caching
+ *		the resulting page from the fs's mkwrite callback.
+ * @vmf:		struct vm_fault containing details of the fault
+ * @page_mkwrite_cb:	the fs specific mkwrite callback
+ *
+ * Some file systems have very heavy mkwrite operations, which means that we can
+ * hold the mmap_sem for long periods of time.  This can cause weird priority
+ * inversions in the system if something tries to take a write lock on the
+ * mmap_sem, which will block any new readers until the writer has done its
+ * work.
+ *
+ * This helper allows file systems to opt-in to a mechanism that will handle
+ * dropping the mmap_sem during the mkwrite, and then caching the result and
+ * re-using the page in the next loop through the fault handler as long as it is
+ * still valid.
+ *
+ * Users of this helper must be sure to _never_ access vmf->vma as it could be
+ * invalid, instead they need to access vmf->file as that will either be pinned
+ * because we grabbed a reference before dropping the mmap_sem, or we still have
+ * the mmap_sem and thus is still save to look at.
+ *
+ * vma->vm_mm->mmap-sem must be held on entry.
+ *
+ * If our return value has VM_FAULT_RETRY set then the mmap_sem has been
+ * dropped, otherwise it is still held.
+ */
+vm_fault_t filemap_page_mkwrite_nommapsem(struct vm_fault *vmf,
+					  page_mkwrite_cb *mkwrite)
+{
+	struct mm_struct *mm = vmf->vma->vm_mm;
+	struct page *page = vmf->page;
+	struct file *file = vmf->vma->vm_file;
+	struct file *fpin;
+	vm_fault_t ret;
+
+	/*
+	 * Our page is already initialized from a previous loop through the
+	 * fault handler, so lock it and check if it is valid, and if it is
+	 * simply return.
+	 */
+	if (vmf->flags & FAULT_FLAG_PAGE_INITIALISED) {
+		lock_page(page);
+		if (initialised_page_valid(vmf, page))
+			return VM_FAULT_LOCKED;
+		unlock_page(page);
+	}
+
+	/*
+	 * mkwrite can be expensive, so drop the mmap_sem for this operation and
+	 * deal with caching the page for the next trip around.
+	 */
+	fpin = maybe_unlock_mmap_for_io(vmf->vma, vmf->flags);
+	vmf->file = file;
+	ret = mkwrite(vmf);
+	if (fpin) {
+		if (ret == VM_FAULT_LOCKED)
+			unlock_page(page);
+		fput(fpin);
+
+		/*
+		 * We had an error when doing mkwrite, instead of looping
+		 * through again just down_read the mmap_sem and return the
+		 * error.  Otherwise cache the page for the next trip through.
+		 */
+		if (ret & VM_FAULT_ERROR) {
+			down_read(&mm->mmap_sem);
+		} else {
+			get_page(page);
+			vmf->cached_page = page;
+			ret = VM_FAULT_RETRY;
+		}
+	}
+	return ret;
+}
+
 const struct vm_operations_struct generic_file_vm_ops = {
 	.fault		= filemap_fault,
 	.map_pages	= filemap_map_pages,
@@ -2874,11 +2966,17 @@ int generic_file_readonly_mmap(struct file * file, struct vm_area_struct * vma)
 {
 	return -ENOSYS;
 }
+vm_fault_t filemap_page_mkwrite_nommapsem(struct vm_fault *vmf,
+					  page_mkwrite_cb *mkwrite)
+{
+	return -ENOSYS;
+}
 #endif /* CONFIG_MMU */
 
 EXPORT_SYMBOL(filemap_page_mkwrite);
 EXPORT_SYMBOL(generic_file_mmap);
 EXPORT_SYMBOL(generic_file_readonly_mmap);
+EXPORT_SYMBOL_GPL(filemap_page_mkwrite_nommapsem);
 
 static struct page *wait_on_page_read(struct page *page)
 {
