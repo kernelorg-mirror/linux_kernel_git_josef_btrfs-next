@@ -552,6 +552,7 @@ good_area:
 
 		int pkey = vma_pkey(vma);
 
+		vm_fault_cleanup(&vmf);
 		up_read(&mm->mmap_sem);
 		return bad_key_fault_exception(regs, address, pkey);
 	}
@@ -580,9 +581,11 @@ good_area:
 		 * User mode? Just return to handle the fatal exception otherwise
 		 * return to bad_page_fault
 		 */
+		vm_fault_cleanup(&vmf);
 		return is_user ? 0 : SIGBUS;
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&current->mm->mmap_sem);
 
 	if (unlikely(fault & VM_FAULT_ERROR))

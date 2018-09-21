@@ -485,9 +485,12 @@ good_area:
 	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(&vmf);
 
-	if (unlikely(fault & (VM_FAULT_RETRY | VM_FAULT_ERROR)))
-		if (mm_fault_error(regs, error_code, address, fault))
+	if (unlikely(fault & (VM_FAULT_RETRY | VM_FAULT_ERROR))) {
+		if (mm_fault_error(regs, error_code, address, fault)) {
+			vm_fault_cleanup(&vmf);
 			return;
+		}
+	}
 
 	if (flags & FAULT_FLAG_ALLOW_RETRY) {
 		if (fault & VM_FAULT_MAJOR) {
@@ -512,5 +515,6 @@ good_area:
 		}
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 }

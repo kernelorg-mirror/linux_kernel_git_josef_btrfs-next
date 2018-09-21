@@ -129,10 +129,13 @@ good_area:
 	 * signal first. We do not need to release the mmap_sem because it
 	 * would already be released in __lock_page_or_retry in mm/filemap.c.
 	 */
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(tsk))
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(tsk)) {
+		vm_fault_cleanup(&vmf);
 		return;
+	}
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
+		vm_fault_cleanup(&vmf);
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
 		else if (fault & VM_FAULT_SIGBUS)
@@ -172,6 +175,7 @@ good_area:
 		}
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 	return;
 

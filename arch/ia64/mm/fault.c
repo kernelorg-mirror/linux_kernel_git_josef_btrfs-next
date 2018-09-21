@@ -165,8 +165,10 @@ retry:
 	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(&vmf);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
+		vm_fault_cleanup(&vmf);
 		return;
+	}
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		/*
@@ -174,6 +176,7 @@ retry:
 		 * to us that made us unable to handle the page fault
 		 * gracefully.
 		 */
+		vm_fault_cleanup(&vmf);
 		if (fault & VM_FAULT_OOM) {
 			goto out_of_memory;
 		} else if (fault & VM_FAULT_SIGSEGV) {
@@ -203,6 +206,7 @@ retry:
 		}
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 	return;
 

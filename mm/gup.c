@@ -518,6 +518,7 @@ static int faultin_page(struct task_struct *tsk, struct vm_area_struct *vma,
 
 	vm_fault_init(&vmf, vma, address, fault_flags);
 	ret = handle_mm_fault(&vmf);
+	vm_fault_cleanup(&vmf);
 	if (ret & VM_FAULT_ERROR) {
 		int err = vm_fault_to_errno(ret, *flags);
 
@@ -840,6 +841,7 @@ retry:
 	if (ret & VM_FAULT_ERROR) {
 		int err = vm_fault_to_errno(ret, 0);
 
+		vm_fault_cleanup(&vmf);
 		if (err)
 			return err;
 		BUG();
@@ -854,6 +856,7 @@ retry:
 			goto retry;
 		}
 	}
+	vm_fault_cleanup(&vmf);
 
 	if (tsk) {
 		if (major)

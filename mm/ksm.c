@@ -483,6 +483,7 @@ static int break_ksm(struct vm_area_struct *vma, unsigned long addr)
 			vm_fault_init(&vmf, vma, addr,
 				      FAULT_FLAG_WRITE | FAULT_FLAG_REMOTE);
 			ret = handle_mm_fault(&vmf);
+			vm_fault_cleanup(&vmf);
 		} else
 			ret = VM_FAULT_WRITE;
 		put_page(page);

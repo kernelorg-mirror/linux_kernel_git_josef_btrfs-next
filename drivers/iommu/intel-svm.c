@@ -640,6 +640,7 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 		vm_fault_init(&vmf, vma, address,
 			      req->wr_req ? FAULT_FLAG_WRITE : 0);
 		ret = handle_mm_fault(&vmf);
+		vm_fault_cleanup(&vmf);
 		if (ret & VM_FAULT_ERROR)
 			goto invalid;
 

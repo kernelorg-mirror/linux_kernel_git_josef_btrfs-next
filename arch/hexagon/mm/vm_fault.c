@@ -106,8 +106,10 @@ good_area:
 	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(&vmf);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
+		vm_fault_cleanup(&vmf);
 		return;
+	}
 
 	/* The most common case -- we are done. */
 	if (likely(!(fault & VM_FAULT_ERROR))) {
@@ -123,10 +125,12 @@ good_area:
 			}
 		}
 
+		vm_fault_cleanup(&vmf);
 		up_read(&mm->mmap_sem);
 		return;
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 
 	/* Handle copyin/out exception cases */

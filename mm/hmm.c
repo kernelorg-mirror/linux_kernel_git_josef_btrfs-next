@@ -309,6 +309,7 @@ static int hmm_vma_do_fault(struct mm_walk *walk, unsigned long addr,
 	flags |= write_fault ? FAULT_FLAG_WRITE : 0;
 	vm_fault_init(&vmf, vma, addr, flags);
 	ret = handle_mm_fault(&vmf);
+	vm_fault_cleanup(&vmf);
 	if (ret & VM_FAULT_RETRY)
 		return -EBUSY;
 	if (ret & VM_FAULT_ERROR) {

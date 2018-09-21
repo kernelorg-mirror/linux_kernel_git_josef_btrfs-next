@@ -506,6 +506,7 @@ retry:
 		 * in __lock_page_or_retry in mm/filemap.c.
 		 */
 		if (fatal_signal_pending(current)) {
+			vm_fault_cleanup(&vmf);
 			if (!user_mode(regs))
 				goto no_context;
 			return 0;
@@ -521,6 +522,7 @@ retry:
 			goto retry;
 		}
 	}
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 
 	/*

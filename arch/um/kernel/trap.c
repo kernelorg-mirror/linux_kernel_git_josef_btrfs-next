@@ -78,10 +78,13 @@ good_area:
 		vm_fault_init(&vmf, vma, address, flags);
 		fault = handle_mm_fault(&vmf);
 
-		if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+		if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
+			vm_fault_cleanup(&vmf);
 			goto out_nosemaphore;
+		}
 
 		if (unlikely(fault & VM_FAULT_ERROR)) {
+			vm_fault_cleanup(&vmf);
 			if (fault & VM_FAULT_OOM) {
 				goto out_of_memory;
 			} else if (fault & VM_FAULT_SIGSEGV) {
@@ -109,6 +112,7 @@ good_area:
 		pud = pud_offset(pgd, address);
 		pmd = pmd_offset(pud, address);
 		pte = pte_offset_kernel(pmd, address);
+		vm_fault_cleanup(&vmf);
 	} while (!pte_present(*pte));
 	err = 0;
 	/*

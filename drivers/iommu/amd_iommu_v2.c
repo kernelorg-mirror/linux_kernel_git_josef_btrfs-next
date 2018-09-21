@@ -535,6 +535,7 @@ static void do_fault(struct work_struct *work)
 
 	vm_fault_init(&vmf, vma, address, flags);
 	ret = handle_mm_fault(&vmf);
+	vm_fault_cleanup(&vmf);
 out:
 	up_read(&mm->mmap_sem);
 

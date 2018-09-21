@@ -239,10 +239,13 @@ good_area:
 	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(vma, address, flags);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
+		vm_fault_cleanup(&vmf);
 		return;
+	}
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
+		vm_fault_cleanup(&vmf);
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
 		else if (fault & VM_FAULT_SIGSEGV)
@@ -275,6 +278,7 @@ good_area:
 		}
 	}
 
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 	return;
 
@@ -412,8 +416,10 @@ good_area:
 	switch (handle_mm_fault(&vmf)) {
 	case VM_FAULT_SIGBUS:
 	case VM_FAULT_OOM:
+		vm_fault_cleanup(&vmf);
 		goto do_sigbus;
 	}
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 	return;
 bad_area:

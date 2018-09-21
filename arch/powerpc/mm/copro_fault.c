@@ -81,6 +81,7 @@ int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 	vm_fault_init(&vmf, vma, ea, is_write ? FAULT_FLAG_WRITE : 0);
 	*flt = handle_mm_fault(&vmf);
 	if (unlikely(*flt & VM_FAULT_ERROR)) {
+		vm_fault_cleanup(&vmf);
 		if (*flt & VM_FAULT_OOM) {
 			ret = -ENOMEM;
 			goto out_unlock;
@@ -95,7 +96,7 @@ int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 		current->maj_flt++;
 	else
 		current->min_flt++;
-
+	vm_fault_cleanup(&vmf);
 out_unlock:
 	up_read(&mm->mmap_sem);
 	return ret;

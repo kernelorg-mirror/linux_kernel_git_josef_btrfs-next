@@ -561,6 +561,7 @@ retry:
 out_up:
 	up_read(&mm->mmap_sem);
 out:
+	vm_fault_cleanup(&vmf);
 	return fault;
 }
 

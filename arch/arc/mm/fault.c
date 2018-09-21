@@ -149,8 +149,10 @@ good_area:
 	if (unlikely(fatal_signal_pending(current))) {
 		if ((fault & VM_FAULT_ERROR) && !(fault & VM_FAULT_RETRY))
 			up_read(&mm->mmap_sem);
-		if (user_mode(regs))
+		if (user_mode(regs)) {
+			vm_fault_cleanup(&vmf);
 			return;
+		}
 	}
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
@@ -176,10 +178,12 @@ good_area:
 		}
 
 		/* Fault Handled Gracefully */
+		vm_fault_cleanup(&vmf);
 		up_read(&mm->mmap_sem);
 		return;
 	}
 
+	vm_fault_cleanup(&vmf);
 	if (fault & VM_FAULT_OOM)
 		goto out_of_memory;
 	else if (fault & VM_FAULT_SIGSEGV)

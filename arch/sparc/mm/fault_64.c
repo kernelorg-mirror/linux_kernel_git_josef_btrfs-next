@@ -437,10 +437,13 @@ good_area:
 	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(vma, address, flags);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
+		vm_fault_cleanup(&vmf);
 		goto exit_exception;
+	}
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
+		vm_fault_cleanup(&vmf);
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
 		else if (fault & VM_FAULT_SIGSEGV)
@@ -472,6 +475,7 @@ good_area:
 			goto retry;
 		}
 	}
+	vm_fault_cleanup(&vmf);
 	up_read(&mm->mmap_sem);
 
 	mm_rss = get_mm_rss(mm);
