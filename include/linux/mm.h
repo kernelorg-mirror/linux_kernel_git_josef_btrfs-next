@@ -370,6 +370,13 @@ struct vm_fault {
 					 * next time we loop through the fault
 					 * handler for faster lookup.
 					 */
+	loff_t cached_size;		/* ->page_mkwrite handlers may drop
+					 * the mmap_sem to avoid starvation, in
+					 * which case they need to save the
+					 * i_size in order to verify the cached
+					 * page we're using the next loop
+					 * through hasn't changed under us.
+					 */
 	/* These three entries are valid only while holding ptl lock */
 	pte_t *pte;			/* Pointer to pte entry matching
 					 * the 'address'. NULL if the page
@@ -1437,6 +1444,8 @@ extern vm_fault_t handle_mm_fault_cacheable(struct vm_fault *vmf);
 extern int fixup_user_fault(struct task_struct *tsk, struct mm_struct *mm,
 			    unsigned long address, unsigned int fault_flags,
 			    bool *unlocked);
+extern struct file *maybe_unlock_mmap_for_io(struct vm_area_struct *vma,
+					     int flags);
 void unmap_mapping_pages(struct address_space *mapping,
 		pgoff_t start, pgoff_t nr, bool even_cows);
 void unmap_mapping_range(struct address_space *mapping,
@@ -1462,6 +1471,11 @@ static inline int fixup_user_fault(struct task_struct *tsk,
 	/* should never happen if there's no MMU */
 	BUG();
 	return -EFAULT;
+}
+static inline struct file *maybe_unlock_mmap_for_io(struct vm_area_struct *vma,
+						    int flags)
+{
+	return NULL;
 }
 static inline void unmap_mapping_pages(struct address_space *mapping,
 		pgoff_t start, pgoff_t nr, bool even_cows) { }

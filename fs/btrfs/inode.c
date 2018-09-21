@@ -8809,7 +8809,9 @@ again:
 vm_fault_t btrfs_page_mkwrite(struct vm_fault *vmf)
 {
 	struct page *page = vmf->page;
-	struct inode *inode = file_inode(vmf->vma->vm_file);
+	struct file *file = vmf->vma->vm_file, *fpin;
+	struct mm_struct *mm = vmf->vma->vm_mm;
+	struct inode *inode = file_inode(file);
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	struct extent_io_tree *io_tree = &BTRFS_I(inode)->io_tree;
 	struct btrfs_ordered_extent *ordered;
@@ -8828,6 +8830,29 @@ vm_fault_t btrfs_page_mkwrite(struct vm_fault *vmf)
 
 	reserved_space = PAGE_SIZE;
 
+	/*
+	 * We have our cached page from a previous mkwrite, check it to make
+	 * sure it's still dirty and our file size matches when we ran mkwrite
+	 * the last time.  If everything is OK then return VM_FAULT_LOCKED,
+	 * otherwise do the mkwrite again.
+	 */
+	if (vmf->flags & FAULT_FLAG_USED_CACHED) {
+		lock_page(page);
+		if (vmf->cached_size == i_size_read(inode) &&
+		    PageDirty(page))
+			return VM_FAULT_LOCKED;
+		unlock_page(page);
+	}
+
+	/*
+	 * mkwrite is extremely expensive, and we are holding the mmap_sem
+	 * during this, which means we can starve out anybody trying to
+	 * down_write(mmap_sem) for a long while, especially if we throw cgroups
+	 * into the mix.  So just drop the mmap_sem and do all of our work,
+	 * we'll loop back through and verify everything is ok the next time and
+	 * hopefully avoid doing the work twice.
+	 */
+	fpin = maybe_unlock_mmap_for_io(vmf->vma, vmf->flags);
 	sb_start_pagefault(inode->i_sb);
 	page_start = page_offset(page);
 	page_end = page_start + PAGE_SIZE - 1;
@@ -8844,7 +8869,7 @@ vm_fault_t btrfs_page_mkwrite(struct vm_fault *vmf)
 	ret2 = btrfs_delalloc_reserve_space(inode, &data_reserved, page_start,
 					   reserved_space);
 	if (!ret2) {
-		ret2 = file_update_time(vmf->vma->vm_file);
+		ret2 = file_update_time(file);
 		reserved = 1;
 	}
 	if (ret2) {
@@ -8943,6 +8968,14 @@ again:
 		btrfs_delalloc_release_extents(BTRFS_I(inode), PAGE_SIZE, true);
 		sb_end_pagefault(inode->i_sb);
 		extent_changeset_free(data_reserved);
+		if (fpin) {
+			unlock_page(page);
+			fput(fpin);
+			get_page(page);
+			vmf->cached_size = size;
+			vmf->cached_page = page;
+			return VM_FAULT_RETRY;
+		}
 		return VM_FAULT_LOCKED;
 	}
 
@@ -8955,6 +8988,10 @@ out:
 out_noreserve:
 	sb_end_pagefault(inode->i_sb);
 	extent_changeset_free(data_reserved);
+	if (fpin) {
+		fput(fpin);
+		down_read(&mm->mmap_sem);
+	}
 	return ret;
 }
 
