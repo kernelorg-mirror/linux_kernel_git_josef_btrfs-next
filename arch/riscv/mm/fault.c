@@ -36,6 +36,7 @@
  */
 asmlinkage void do_page_fault(struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	struct task_struct *tsk;
 	struct vm_area_struct *vma;
 	struct mm_struct *mm;
@@ -120,6 +121,7 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
+	vm_fault_init(&vmf, vma, addr, flags);
 	fault = handle_mm_fault(vma, addr, flags);
 
 	/*

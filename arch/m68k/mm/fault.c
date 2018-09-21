@@ -68,6 +68,7 @@ int send_fault_sig(struct pt_regs *regs)
 int do_page_fault(struct pt_regs *regs, unsigned long address,
 			      unsigned long error_code)
 {
+	struct vm_fault vmf = {};
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct * vma;
 	vm_fault_t fault;
@@ -134,8 +135,8 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault(&vmf);
 	pr_debug("handle_mm_fault returns %x\n", fault);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))

@@ -409,6 +409,7 @@ static void sanity_check_fault(bool is_write, unsigned long error_code) { }
 static int __do_page_fault(struct pt_regs *regs, unsigned long address,
 			   unsigned long error_code)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct * vma;
 	struct mm_struct *mm = current->mm;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
@@ -538,7 +539,8 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault(&vmf);
 
 #ifdef CONFIG_PPC_MEM_KEYS
 	/*

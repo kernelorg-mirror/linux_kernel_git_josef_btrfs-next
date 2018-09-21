@@ -506,6 +506,7 @@ static bool access_error(struct vm_area_struct *vma, struct fault *fault)
 
 static void do_fault(struct work_struct *work)
 {
+	struct vm_fault vmf = {};
 	struct fault *fault = container_of(work, struct fault, work);
 	struct vm_area_struct *vma;
 	vm_fault_t ret = VM_FAULT_ERROR;
@@ -532,7 +533,8 @@ static void do_fault(struct work_struct *work)
 	if (access_error(vma, fault))
 		goto out;
 
-	ret = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	ret = handle_mm_fault(&vmf);
 out:
 	up_read(&mm->mmap_sem);
 

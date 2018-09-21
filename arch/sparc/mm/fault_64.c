@@ -274,6 +274,7 @@ static void noinline __kprobes bogus_32bit_fault_tpc(struct pt_regs *regs)
 
 asmlinkage void __kprobes do_sparc64_fault(struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	enum ctx_state prev_state = exception_enter();
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
@@ -433,6 +434,7 @@ good_area:
 			goto bad_area;
 	}
 
+	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(vma, address, flags);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))

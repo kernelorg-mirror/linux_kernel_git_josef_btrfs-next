@@ -298,6 +298,7 @@ struct hmm_vma_walk {
 static int hmm_vma_do_fault(struct mm_walk *walk, unsigned long addr,
 			    bool write_fault, uint64_t *pfn)
 {
+	struct vm_fault vmf = {};
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_REMOTE;
 	struct hmm_vma_walk *hmm_vma_walk = walk->private;
 	struct hmm_range *range = hmm_vma_walk->range;
@@ -306,7 +307,8 @@ static int hmm_vma_do_fault(struct mm_walk *walk, unsigned long addr,
 
 	flags |= hmm_vma_walk->block ? 0 : FAULT_FLAG_ALLOW_RETRY;
 	flags |= write_fault ? FAULT_FLAG_WRITE : 0;
-	ret = handle_mm_fault(vma, addr, flags);
+	vm_fault_init(&vmf, vma, addr, flags);
+	ret = handle_mm_fault(&vmf);
 	if (ret & VM_FAULT_RETRY)
 		return -EBUSY;
 	if (ret & VM_FAULT_ERROR) {

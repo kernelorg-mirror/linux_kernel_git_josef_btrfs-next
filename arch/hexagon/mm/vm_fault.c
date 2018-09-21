@@ -48,6 +48,7 @@
  */
 void do_page_fault(unsigned long address, long cause, struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 	int si_signo;
@@ -102,7 +103,8 @@ good_area:
 		break;
 	}
 
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault(&vmf);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return;

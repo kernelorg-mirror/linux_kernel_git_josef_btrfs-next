@@ -258,6 +258,7 @@ show_signal_msg(struct pt_regs *regs, unsigned long code,
 void do_page_fault(struct pt_regs *regs, unsigned long code,
 			      unsigned long address)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct *vma, *prev_vma;
 	struct task_struct *tsk;
 	struct mm_struct *mm;
@@ -300,8 +301,8 @@ good_area:
 	 * sure we exit gracefully rather than endlessly redo the
 	 * fault.
 	 */
-
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault(&vmf);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return;

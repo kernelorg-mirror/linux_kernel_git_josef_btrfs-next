@@ -82,6 +82,7 @@ mapped_kernel_page_is_present (unsigned long address)
 void __kprobes
 ia64_do_page_fault (unsigned long address, unsigned long isr, struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	int signal = SIGSEGV, code = SEGV_MAPERR;
 	struct vm_area_struct *vma, *prev_vma;
 	struct mm_struct *mm = current->mm;
@@ -161,7 +162,8 @@ retry:
 	 * sure we exit gracefully rather than endlessly redo the
 	 * fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault(&vmf);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return;

@@ -69,6 +69,7 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 void do_page_fault(unsigned long entry, unsigned long addr,
 		   unsigned int error_code, struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
@@ -203,8 +204,8 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-
-	fault = handle_mm_fault(vma, addr, flags);
+	vm_fault_init(&vmf, vma, addr, flags);
+	fault = handle_mm_fault(&vmf);
 
 	/*
 	 * If we need to retry but a fatal signal is pending, handle the

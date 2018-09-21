@@ -160,6 +160,7 @@ static noinline void do_fault_siginfo(int code, int sig, struct pt_regs *regs,
 asmlinkage void do_sparc_fault(struct pt_regs *regs, int text_fault, int write,
 			       unsigned long address)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct *vma;
 	struct task_struct *tsk = current;
 	struct mm_struct *mm = tsk->mm;
@@ -235,6 +236,7 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
+	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(vma, address, flags);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
@@ -377,6 +379,7 @@ vmalloc_fault:
 /* This always deals with user addresses. */
 static void force_user_fault(unsigned long address, int write)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct *vma;
 	struct task_struct *tsk = current;
 	struct mm_struct *mm = tsk->mm;
@@ -405,7 +408,8 @@ good_area:
 		if (!(vma->vm_flags & (VM_READ | VM_EXEC)))
 			goto bad_area;
 	}
-	switch (handle_mm_fault(vma, address, flags)) {
+	vm_fault_init(&vmf, vma, address, flags);
+	switch (handle_mm_fault(&vmf)) {
 	case VM_FAULT_SIGBUS:
 	case VM_FAULT_OOM:
 		goto do_sigbus;

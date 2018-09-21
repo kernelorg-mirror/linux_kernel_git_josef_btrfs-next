@@ -392,6 +392,7 @@ asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,
 					unsigned long error_code,
 					unsigned long address)
 {
+	stuct vm_fault vmf = {};
 	unsigned long vec;
 	struct task_struct *tsk;
 	struct mm_struct *mm;
@@ -481,7 +482,8 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmf, vma, address, flags);
+	fault = handle_mm_fault(&vmf);
 
 	if (unlikely(fault & (VM_FAULT_RETRY | VM_FAULT_ERROR)))
 		if (mm_fault_error(regs, error_code, address, fault))

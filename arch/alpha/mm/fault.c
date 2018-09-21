@@ -84,6 +84,7 @@ asmlinkage void
 do_page_fault(unsigned long address, unsigned long mmcsr,
 	      long cause, struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct * vma;
 	struct mm_struct *mm = current->mm;
 	const struct exception_table_entry *fixup;
@@ -148,7 +149,8 @@ retry:
 	/* If for any reason at all we couldn't handle the fault,
 	   make sure we exit gracefully rather than endlessly redo
 	   the fault.  */
-	fault = handle_mm_fault(vma, address, flags);
+	vm_fault_init(&vmfs, vma, flags, address);
+	fault = handle_mm_fault(&vmf);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return;

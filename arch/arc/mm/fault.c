@@ -63,6 +63,7 @@ bad_area:
 
 void do_page_fault(unsigned long address, struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct *vma = NULL;
 	struct task_struct *tsk = current;
 	struct mm_struct *mm = tsk->mm;
@@ -141,6 +142,7 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
+	vm_fault_init(&vmf, vma, address, flags);
 	fault = handle_mm_fault(vma, address, flags);
 
 	/* If Pagefault was interrupted by SIGKILL, exit page fault "early" */

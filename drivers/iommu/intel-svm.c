@@ -567,6 +567,7 @@ static bool is_canonical_address(u64 addr)
 
 static irqreturn_t prq_event_thread(int irq, void *d)
 {
+	struct vm_fault vmf = {};
 	struct intel_iommu *iommu = d;
 	struct intel_svm *svm = NULL;
 	int head, tail, handled = 0;
@@ -636,8 +637,9 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 		if (access_error(vma, req))
 			goto invalid;
 
-		ret = handle_mm_fault(vma, address,
-				      req->wr_req ? FAULT_FLAG_WRITE : 0);
+		vm_fault_init(&vmf, vma, address,
+			      req->wr_req ? FAULT_FLAG_WRITE : 0);
+		ret = handle_mm_fault(&vmf);
 		if (ret & VM_FAULT_ERROR)
 			goto invalid;
 

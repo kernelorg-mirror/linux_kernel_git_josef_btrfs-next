@@ -225,17 +225,17 @@ static inline bool access_error(unsigned int fsr, struct vm_area_struct *vma)
 }
 
 static vm_fault_t __kprobes
-__do_page_fault(struct mm_struct *mm, unsigned long addr, unsigned int fsr,
-		unsigned int flags, struct task_struct *tsk)
+__do_page_fault(struct mm_struct *mm, struct vm_fault *vm, unsigned int fsr,
+		struct task_struct *tsk)
 {
 	struct vm_area_struct *vma;
 	vm_fault_t fault;
 
-	vma = find_vma(mm, addr);
+	vma = find_vma(mm, vmf->address);
 	fault = VM_FAULT_BADMAP;
 	if (unlikely(!vma))
 		goto out;
-	if (unlikely(vma->vm_start > addr))
+	if (unlikely(vma->vm_start > vmf->address))
 		goto check_stack;
 
 	/*
@@ -248,12 +248,14 @@ good_area:
 		goto out;
 	}
 
-	return handle_mm_fault(vma, addr & PAGE_MASK, flags);
+	vmf->vma = vma;
+	return handle_mm_fault(vmf);
 
 check_stack:
 	/* Don't allow expansion below FIRST_USER_ADDRESS */
 	if (vma->vm_flags & VM_GROWSDOWN &&
-	    addr >= FIRST_USER_ADDRESS && !expand_stack(vma, addr))
+	    vmf->address >= FIRST_USER_ADDRESS &&
+	    !expand_stack(vma, vmf->address))
 		goto good_area;
 out:
 	return fault;
@@ -262,6 +264,7 @@ out:
 static int __kprobes
 do_page_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
+	struct vm_fault = {};
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	int sig, code;
@@ -314,7 +317,8 @@ retry:
 #endif
 	}
 
-	fault = __do_page_fault(mm, addr, fsr, flags, tsk);
+	vm_fault_init(&vmf, NULL, addr, flags);
+	fault = __do_page_fault(mm, &vmf, fsr, tsk);
 
 	/* If we need to retry but a fatal signal is pending, handle the
 	 * signal first. We do not need to release the mmap_sem because

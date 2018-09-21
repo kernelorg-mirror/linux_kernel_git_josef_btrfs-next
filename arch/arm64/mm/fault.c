@@ -379,18 +379,17 @@ static void do_bad_area(unsigned long addr, unsigned int esr, struct pt_regs *re
 #define VM_FAULT_BADMAP		0x010000
 #define VM_FAULT_BADACCESS	0x020000
 
-static vm_fault_t __do_page_fault(struct mm_struct *mm, unsigned long addr,
-			   unsigned int mm_flags, unsigned long vm_flags,
-			   struct task_struct *tsk)
+static vm_fault_t __do_page_fault(struct mm_struct *mm, struct vm_fault *vmf,
+				  unsigned long vm_flags, struct task_struct *tsk)
 {
 	struct vm_area_struct *vma;
 	vm_fault_t fault;
 
-	vma = find_vma(mm, addr);
+	vma = find_vma(mm, vmf->address);
 	fault = VM_FAULT_BADMAP;
 	if (unlikely(!vma))
 		goto out;
-	if (unlikely(vma->vm_start > addr))
+	if (unlikely(vma->vm_start > vmf->address))
 		goto check_stack;
 
 	/*
@@ -407,10 +406,11 @@ good_area:
 		goto out;
 	}
 
-	return handle_mm_fault(vma, addr & PAGE_MASK, mm_flags);
+	vmf->vma = vma;
+	return handle_mm_fault(vmf);
 
 check_stack:
-	if (vma->vm_flags & VM_GROWSDOWN && !expand_stack(vma, addr))
+	if (vma->vm_flags & VM_GROWSDOWN && !expand_stack(vma, vmf->address))
 		goto good_area;
 out:
 	return fault;
@@ -424,6 +424,7 @@ static bool is_el0_instruction_abort(unsigned int esr)
 static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 				   struct pt_regs *regs)
 {
+	struct vm_fault vmf = {};
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	struct siginfo si;
@@ -493,7 +494,8 @@ retry:
 #endif
 	}
 
-	fault = __do_page_fault(mm, addr, mm_flags, vm_flags, tsk);
+	vm_fault_init(&vmf, NULL, addr, mm_flags);
+	fault = __do_page_fault(mm, vmf, vm_flags, tsk);
 	major |= fault & VM_FAULT_MAJOR;
 
 	if (fault & VM_FAULT_RETRY) {

@@ -36,6 +36,7 @@
 int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 		unsigned long dsisr, vm_fault_t *flt)
 {
+	struct vm_fault vmf = {};
 	struct vm_area_struct *vma;
 	unsigned long is_write;
 	int ret;
@@ -77,7 +78,8 @@ int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 	}
 
 	ret = 0;
-	*flt = handle_mm_fault(vma, ea, is_write ? FAULT_FLAG_WRITE : 0);
+	vm_fault_init(&vmf, vma, ea, is_write ? FAULT_FLAG_WRITE : 0);
+	*flt = handle_mm_fault(&vmf);
 	if (unlikely(*flt & VM_FAULT_ERROR)) {
 		if (*flt & VM_FAULT_OOM) {
 			ret = -ENOMEM;
