@@ -2392,6 +2392,35 @@ static struct file *do_async_mmap_readahead(struct vm_area_struct *vma,
 	return fpin;
 }
 
+static int vmf_has_cached_page(struct vm_fault *vmf, struct page **page)
+{
+	struct page *cached_page = vmf->cached_page;
+	struct mm_struct *mm = vmf->vma->vm_mm;
+	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
+	pgoff_t offset = vmf->pgoff;
+
+	if (!cached_page)
+		return 0;
+
+	if (vmf->flags & FAULT_FLAG_KILLABLE) {
+		int ret = lock_page_killable(cached_page);
+		if (ret) {
+			up_read(&mm->mmap_sem);
+			return ret;
+		}
+	} else
+		lock_page(cached_page);
+	vmf->cached_page = NULL;
+	if (cached_page->mapping == mapping &&
+	    cached_page->index == offset) {
+		*page = cached_page;
+	} else {
+		unlock_page(cached_page);
+		put_page(cached_page);
+	}
+	return 0;
+}
+
 /**
  * filemap_fault - read in file data for page fault handling
  * @vmf:	struct vm_fault containing details of the fault
@@ -2425,12 +2454,23 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	struct inode *inode = mapping->host;
 	pgoff_t offset = vmf->pgoff;
 	pgoff_t max_off;
-	struct page *page;
+	struct page *page = NULL;
 	vm_fault_t ret = 0;
 
 	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
 	if (unlikely(offset >= max_off))
 		return VM_FAULT_SIGBUS;
+
+	/*
+	 * We may have read in the page already and have a page from an earlier
+	 * loop.  If so we need to see if this page is still valid, and if not
+	 * do the whole dance over again.
+	 */
+	error = vmf_has_cached_page(vmf, &page);
+	if (error)
+		goto out_retry;
+	if (page)
+		goto have_cached_page;
 
 	/*
 	 * Do we have something in the page cache already?
@@ -2492,6 +2532,7 @@ retry_find:
 		put_page(page);
 		goto retry_find;
 	}
+have_cached_page:
 	VM_BUG_ON_PAGE(page->index != offset, page);
 
 	/*
@@ -2558,7 +2599,7 @@ out_retry:
 	 * page.
 	 */
 	if (page)
-		put_page(page);
+		vmf->cached_page = page;
 	if (fpin)
 		fput(fpin);
 	return ret | VM_FAULT_RETRY;
