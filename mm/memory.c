@@ -138,6 +138,7 @@ static int __init init_zero_pfn(void)
 }
 core_initcall(init_zero_pfn);
 
+#define __FAIL_FLAGS (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)
 
 #if defined(SPLIT_RSS_COUNTING)
 
@@ -2388,7 +2389,7 @@ static vm_fault_t do_page_mkwrite(struct vm_fault *vmf)
 	ret = vmf->vma->vm_ops->page_mkwrite(vmf);
 	/* Restore original flags so that caller is not surprised */
 	vmf->flags = old_flags;
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE)))
+	if (ret & __FAIL_FLAGS)
 		return ret;
 	if (unlikely(!(ret & VM_FAULT_LOCKED))) {
 		lock_page(page);
@@ -2662,7 +2663,7 @@ static vm_fault_t wp_pfn_shared(struct vm_fault *vmf)
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		vmf->flags |= FAULT_FLAG_MKWRITE;
 		ret = vma->vm_ops->pfn_mkwrite(vmf);
-		if (ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE))
+		if (ret & __FAIL_FLAGS)
 			return ret;
 		return finish_mkwrite_fault(vmf);
 	}
@@ -2682,13 +2683,12 @@ static vm_fault_t wp_page_shared(struct vm_fault *vmf)
 
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		tmp = do_page_mkwrite(vmf);
-		if (unlikely(!tmp || (tmp &
-				      (VM_FAULT_ERROR | VM_FAULT_NOPAGE)))) {
+		if (!tmp || (tmp & __FAIL_FLAGS)) {
 			put_page(vmf->page);
 			return tmp;
 		}
 		tmp = finish_mkwrite_fault(vmf);
-		if (unlikely(tmp & (VM_FAULT_ERROR | VM_FAULT_NOPAGE))) {
+		if (tmp & __FAIL_FLAGS) {
 			unlock_page(vmf->page);
 			put_page(vmf->page);
 			return tmp;
@@ -3238,8 +3238,7 @@ static vm_fault_t __do_fault(struct vm_fault *vmf)
 	vm_fault_t ret;
 
 	ret = vma->vm_ops->fault(vmf);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY |
-			    VM_FAULT_DONE_COW)))
+	if (unlikely(ret & (__FAIL_FLAGS | VM_FAULT_DONE_COW)))
 		return ret;
 
 	if (unlikely(PageHWPoison(vmf->page))) {
@@ -3650,12 +3649,12 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 	}
 
 	ret = __do_fault(vmf);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
+	if (ret & __FAIL_FLAGS)
 		return ret;
 
 	ret |= finish_fault(vmf);
 	unlock_page(vmf->page);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
+	if (ret & __FAIL_FLAGS)
 		put_page(vmf->page);
 	return ret;
 }
@@ -3679,7 +3678,7 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 	}
 
 	ret = __do_fault(vmf);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
+	if (ret & __FAIL_FLAGS)
 		goto uncharge_out;
 	if (ret & VM_FAULT_DONE_COW)
 		return ret;
@@ -3690,7 +3689,7 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 	ret |= finish_fault(vmf);
 	unlock_page(vmf->page);
 	put_page(vmf->page);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
+	if (ret & __FAIL_FLAGS)
 		goto uncharge_out;
 	return ret;
 uncharge_out:
@@ -3705,7 +3704,7 @@ static vm_fault_t do_shared_fault(struct vm_fault *vmf)
 	vm_fault_t ret, tmp;
 
 	ret = __do_fault(vmf);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
+	if (ret & __FAIL_FLAGS)
 		return ret;
 
 	/*
@@ -3715,16 +3714,14 @@ static vm_fault_t do_shared_fault(struct vm_fault *vmf)
 	if (vma->vm_ops->page_mkwrite) {
 		unlock_page(vmf->page);
 		tmp = do_page_mkwrite(vmf);
-		if (unlikely(!tmp ||
-				(tmp & (VM_FAULT_ERROR | VM_FAULT_NOPAGE)))) {
+		if (!tmp || (tmp & __FAIL_FLAGS)) {
 			put_page(vmf->page);
 			return tmp;
 		}
 	}
 
 	ret |= finish_fault(vmf);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE |
-					VM_FAULT_RETRY))) {
+	if (ret & __FAIL_FLAGS) {
 		unlock_page(vmf->page);
 		put_page(vmf->page);
 		return ret;
