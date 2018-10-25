@@ -8806,10 +8806,11 @@ again:
  * beyond EOF, then the page is guaranteed safe against truncation until we
  * unlock the page.
  */
-vm_fault_t btrfs_page_mkwrite(struct vm_fault *vmf)
+static vm_fault_t __btrfs_page_mkwrite(struct vm_fault *vmf)
 {
 	struct page *page = vmf->page;
-	struct inode *inode = file_inode(vmf->vma->vm_file);
+	struct file *file = vmf->file;
+	struct inode *inode = file_inode(file);
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	struct extent_io_tree *io_tree = &BTRFS_I(inode)->io_tree;
 	struct btrfs_ordered_extent *ordered;
@@ -8844,7 +8845,7 @@ vm_fault_t btrfs_page_mkwrite(struct vm_fault *vmf)
 	ret2 = btrfs_delalloc_reserve_space(inode, &data_reserved, page_start,
 					   reserved_space);
 	if (!ret2) {
-		ret2 = file_update_time(vmf->vma->vm_file);
+		ret2 = file_update_time(file);
 		reserved = 1;
 	}
 	if (ret2) {
@@ -8956,6 +8957,11 @@ out_noreserve:
 	sb_end_pagefault(inode->i_sb);
 	extent_changeset_free(data_reserved);
 	return ret;
+}
+
+vm_fault_t btrfs_page_mkwrite(struct vm_fault *vmf)
+{
+	return filemap_page_mkwrite_nommapsem(vmf, __btrfs_page_mkwrite);
 }
 
 static int btrfs_truncate(struct inode *inode, bool skip_writeback)
