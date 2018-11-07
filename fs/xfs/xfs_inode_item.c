@@ -503,13 +503,16 @@ xfs_inode_item_push(
 	 * previously. Resubmit the buffer for IO.
 	 */
 	if (test_bit(XFS_LI_FAILED, &lip->li_flags)) {
-		if (!xfs_buf_trylock(bp))
+		xfs_buf_hold(bp);
+		if (!xfs_buf_trylock(bp)) {
+			xfs_buf_rele(bp);
 			return XFS_ITEM_LOCKED;
+		}
 
 		if (!xfs_buf_resubmit_failed_buffers(bp, buffer_list))
 			rval = XFS_ITEM_FLUSHING;
 
-		xfs_buf_unlock(bp);
+		xfs_buf_relse(bp);
 		return rval;
 	}
 
