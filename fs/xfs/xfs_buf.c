@@ -1327,7 +1327,7 @@ xfs_buf_bio_end_io(
 	bio_put(bio);
 }
 
-static void
+STATIC void
 xfs_buf_ioapply_map(
 	struct xfs_buf	*bp,
 	int		map,
