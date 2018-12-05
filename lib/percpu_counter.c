@@ -119,6 +119,24 @@ s64 __percpu_counter_sum(struct percpu_counter *fbc)
 }
 EXPORT_SYMBOL(__percpu_counter_sum);
 
+s64 __percpu_counter_sum_reset(struct percpu_counter *fbc)
+{
+	s64 ret;
+	int cpu;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&fbc->lock, flags);
+	ret = fbc->count;
+	fbc->count = 0;
+	for_each_online_cpu(cpu) {
+		s32 *pcount = per_cpu_ptr(fbc->counters, cpu);
+		ret += *pcount;
+		*pcount = 0;
+	}
+	raw_spin_unlock_irqrestore(&fbc->lock, flags);
+	return ret;
+}
+
 int __percpu_counter_init(struct percpu_counter *fbc, s64 amount, gfp_t gfp,
 			  struct lock_class_key *key)
 {

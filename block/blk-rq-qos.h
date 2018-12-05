@@ -13,7 +13,8 @@ struct blk_mq_debugfs_attr;
 
 enum rq_qos_id {
 	RQ_QOS_WBT,
-	RQ_QOS_CGROUP,
+	RQ_QOS_IOLATENCY,
+	RQ_QOS_IOWEIGHT,
 };
 
 struct rq_wait {
@@ -79,8 +80,10 @@ static inline const char *rq_qos_id_to_name(enum rq_qos_id id)
 	switch (id) {
 	case RQ_QOS_WBT:
 		return "wbt";
-	case RQ_QOS_CGROUP:
-		return "cgroup";
+	case RQ_QOS_IOLATENCY:
+		return "iolatency";
+	case RQ_QOS_IOWEIGHT:
+		return "ioweight";
 	}
 	return "unknown";
 }
