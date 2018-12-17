@@ -331,6 +331,9 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 	rq->nr_integrity_segments = 0;
 #endif
+#ifdef CONFIG_BLK_CGROUP
+	rq->blkg = NULL;
+#endif
 	rq->special = NULL;
 	/* tag was already set */
 	rq->extra_len = 0;
@@ -489,6 +492,12 @@ static void __blk_mq_free_request(struct request *rq)
 	const int sched_tag = rq->internal_tag;
 
 	blk_pm_mark_last_busy(rq);
+#ifdef CONFIG_BLK_CGROUP
+	if (rq->blkg) {
+		blkg_put(rq->blkg);
+		rq->blkg = NULL;
+	}
+#endif
 	rq->mq_hctx = NULL;
 	if (rq->tag != -1)
 		blk_mq_put_tag(hctx, hctx->tags, ctx, rq->tag);
@@ -1943,6 +1952,8 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 			bio_wouldblock_error(bio);
 		return BLK_QC_T_NONE;
 	}
+
+	blkcg_init_rq(rq, bio);
 
 	trace_block_getrq(q, bio, bio->bi_opf);
 

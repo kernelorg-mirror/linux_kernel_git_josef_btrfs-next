@@ -213,6 +213,10 @@ struct request {
 	unsigned short nr_integrity_segments;
 #endif
 
+#ifdef CONFIG_BLK_CGROUP
+	struct blkcg_gq *blkg;
+#endif
+
 	unsigned short write_hint;
 	unsigned short ioprio;
 

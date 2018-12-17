@@ -847,6 +847,12 @@ static inline void blkcg_clear_delay(struct blkcg_gq *blkg)
 	}
 }
 
+static inline void blkcg_init_rq(struct request *rq, struct bio *bio)
+{
+	if (blkg_tryget(bio->bi_blkg))
+		rq->blkg = bio->bi_blkg;
+}
+
 void blkcg_add_delay(struct blkcg_gq *blkg, u64 now, u64 delta);
 void blkcg_schedule_throttle(struct request_queue *q, bool use_memdelay);
 void blkcg_maybe_throttle_current(void);
@@ -902,6 +908,7 @@ static inline void blkg_put(struct blkcg_gq *blkg) { }
 static inline void blkcg_bio_issue_init(struct bio *bio) { }
 static inline bool blkcg_bio_issue_check(struct request_queue *q,
 					 struct bio *bio) { return true; }
+static inline void blkcg_init_rq(struct request *rq, struct bio *bio) { };
 
 #define blk_queue_for_each_rl(rl, q)	\
 	for ((rl) = &(q)->root_rl; (rl); (rl) = NULL)
