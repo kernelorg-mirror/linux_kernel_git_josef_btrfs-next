@@ -7,6 +7,7 @@
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/scatterlist.h>
+#include <linux/blk-cgroup.h>
 
 #include <trace/events/block.h>
 
@@ -882,6 +883,9 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 		return false;
 
 	if (rq->ioprio != bio_prio(bio))
+		return false;
+
+	if (!blkcg_rq_merge_ok(rq, bio))
 		return false;
 
 	return true;

@@ -853,6 +853,15 @@ static inline void blkcg_init_rq(struct request *rq, struct bio *bio)
 		rq->blkg = bio->bi_blkg;
 }
 
+static inline bool blkcg_rq_merge_ok(struct request *rq, struct bio *bio)
+{
+	if (!bio->bi_blkg || !rq->blkg)
+		return true;
+	if (bio->bi_blkg == rq->blkg)
+		return true;
+	return false;
+}
+
 void blkcg_add_delay(struct blkcg_gq *blkg, u64 now, u64 delta);
 void blkcg_schedule_throttle(struct request_queue *q, bool use_memdelay);
 void blkcg_maybe_throttle_current(void);
@@ -909,6 +918,7 @@ static inline void blkcg_bio_issue_init(struct bio *bio) { }
 static inline bool blkcg_bio_issue_check(struct request_queue *q,
 					 struct bio *bio) { return true; }
 static inline void blkcg_init_rq(struct request *rq, struct bio *bio) { };
+static inline bool blkcg_rq_merge_ok(struct request *rq, struct bio *bio) { return true; }
 
 #define blk_queue_for_each_rl(rl, q)	\
 	for ((rl) = &(q)->root_rl; (rl); (rl) = NULL)
