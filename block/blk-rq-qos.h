@@ -72,7 +72,7 @@ static inline struct rq_qos *wbt_rq_qos(struct request_queue *q)
 
 static inline struct rq_qos *blkcg_rq_qos(struct request_queue *q)
 {
-	return rq_qos_id(q, RQ_QOS_CGROUP);
+	return rq_qos_id(q, RQ_QOS_IOLATENCY);
 }
 
 static inline const char *rq_qos_id_to_name(enum rq_qos_id id)

@@ -112,32 +112,12 @@ static void __blkcg_ioweight_throttle(struct rq_qos *rqos,
 static void blkcg_ioweight_throttle(struct rq_qos *rqos, struct bio *bio)
 {
 	struct blk_ioweight *blkioweight = BLKIOWEIGHT(rqos);
-	struct blkcg *blkcg;
-	struct blkcg_gq *blkg;
-	struct request_queue *q = rqos->q;
+	struct blkcg_gq *blkg = bio->bi_blkg;
 	bool issue_as_root = bio_issue_as_root_blkg(bio);
 
 	if (!blk_ioweight_enabled(blkioweight))
 		return;
 
-	rcu_read_lock();
-	blkcg = bio_blkcg(bio);
-	bio_associate_blkcg(bio, &blkcg->css);
-	blkg = blkg_lookup(blkcg, q);
-	if (unlikely(!blkg)) {
-		spin_lock_irq(&q->queue_lock);
-		blkg = blkg_lookup_create(blkcg, q);
-		if (IS_ERR(blkg))
-			blkg = NULL;
-		spin_unlock_irq(&q->queue_lock);
-	}
-	if (!blkg)
-		goto out;
-
-	bio_issue_init(&bio->bi_issue, bio_sectors(bio));
-	bio_associate_blkg(bio, blkg);
-out:
-	rcu_read_unlock();
 	while (blkg && blkg->parent) {
 		struct ioweight_grp *ioweight = blkg_to_ioweight(blkg);
 		if (!ioweight) {
@@ -347,7 +327,7 @@ static void blkioweight_timer_fn(struct blk_stat_callback *cb)
 		 * We could be exiting, don't access the pd unless we have a
 		 * ref on the blkg.
 		 */
-		if (!blkg_try_get(blkg))
+		if (!blkg_tryget(blkg))
 			continue;
 
 		ioweight = blkg_to_ioweight(blkg);
