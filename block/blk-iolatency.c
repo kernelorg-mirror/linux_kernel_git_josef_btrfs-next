@@ -216,7 +216,7 @@ static inline void latency_stat_record_time(struct iolatency_grp *iolat,
 			stat->ps.missed++;
 		stat->ps.total++;
 	} else
-		blk_rq_stat_add(&stat->rqs, req_time);
+		blk_rq_stat_add(&stat->rqs, req_time, 0);
 	put_cpu_ptr(stat);
 }
 

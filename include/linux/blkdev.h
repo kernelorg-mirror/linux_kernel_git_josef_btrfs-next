@@ -195,12 +195,11 @@ struct request {
 	u64 start_time_ns;
 	/* Time that I/O was submitted to the device. */
 	u64 io_start_time_ns;
+	/* Bytes submitted to the device. */
+	unsigned int io_bytes;
 
 #ifdef CONFIG_BLK_WBT
 	unsigned short wbt_flags;
-#endif
-#ifdef CONFIG_BLK_DEV_THROTTLING_LOW
-	unsigned short throtl_size;
 #endif
 
 	/*

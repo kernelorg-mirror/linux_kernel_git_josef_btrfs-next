@@ -21,7 +21,7 @@ void blk_rq_stat_init(struct blk_rq_stat *stat)
 {
 	stat->min = -1ULL;
 	stat->max = stat->nr_samples = stat->mean = 0;
-	stat->time = 0;
+	stat->size = stat->time = 0;
 }
 
 /* src is a per-cpu stat, mean isn't initialized */
@@ -37,13 +37,15 @@ void blk_rq_stat_sum(struct blk_rq_stat *dst, struct blk_rq_stat *src)
 				dst->nr_samples + src->nr_samples);
 
 	dst->nr_samples += src->nr_samples;
+	dst->size += src->size;
 }
 
-void blk_rq_stat_add(struct blk_rq_stat *stat, u64 value)
+void blk_rq_stat_add(struct blk_rq_stat *stat, u64 time, u64 size)
 {
-	stat->min = min(stat->min, value);
-	stat->max = max(stat->max, value);
-	stat->time += value;
+	stat->min = min(stat->min, time);
+	stat->max = max(stat->max, time);
+	stat->time += time;
+	stat->size += size;
 	stat->nr_samples++;
 }
 
@@ -69,7 +71,7 @@ void blk_stat_add(struct request *rq, u64 now)
 			continue;
 
 		stat = &get_cpu_ptr(cb->cpu_stat)[bucket];
-		blk_rq_stat_add(stat, value);
+		blk_rq_stat_add(stat, value, rq->io_bytes);
 		put_cpu_ptr(cb->cpu_stat);
 	}
 	rcu_read_unlock();

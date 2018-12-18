@@ -457,6 +457,7 @@ struct blk_rq_stat {
 	u64 max;
 	u32 nr_samples;
 	u64 time;
+	u64 size;
 };
 
 #endif /* __LINUX_BLK_TYPES_H */
