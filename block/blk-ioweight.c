@@ -311,7 +311,7 @@ static void blkioweight_timer_fn(struct blk_stat_callback *cb)
 	struct cgroup_subsys_state *pos_css;
 	u64 saturation;
 
-	saturation = cb->stat[0].batch;
+	saturation = cb->stat[0].time;
 	if (blkioweight->saturation < round_down(saturation, POW2_NSEC_PER_MSEC))
 		blkioweight->saturation = round_down(saturation, POW2_NSEC_PER_MSEC);
 	trace_printk("current saturation %llu, highest %llu\n", saturation, blkioweight->saturation);
