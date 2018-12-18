@@ -22,6 +22,8 @@ void blk_rq_stat_init(struct blk_rq_stat *stat)
 	stat->min = -1ULL;
 	stat->max = stat->nr_samples = stat->mean = 0;
 	stat->size = stat->time = 0;
+	stat->start_ns = -1ULL;
+	stat->end_ns = 0;
 }
 
 /* src is a per-cpu stat, mean isn't initialized */
@@ -38,10 +40,16 @@ void blk_rq_stat_sum(struct blk_rq_stat *dst, struct blk_rq_stat *src)
 
 	dst->nr_samples += src->nr_samples;
 	dst->size += src->size;
+	dst->start_ns = min(dst->start_ns, src->start_ns);
+	dst->end_ns = max(dst->end_ns, src->end_ns);
 }
 
-void blk_rq_stat_add(struct blk_rq_stat *stat, u64 time, u64 size)
+void blk_rq_stat_add(struct blk_rq_stat *stat, u64 start, u64 end, u64 size)
 {
+	u64 time = end - start;
+
+	stat->start_ns = min(stat->start_ns, start);
+	stat->end_ns = max(stat->end_ns, end);
 	stat->min = min(stat->min, time);
 	stat->max = max(stat->max, time);
 	stat->time += time;
@@ -55,11 +63,13 @@ void blk_stat_add(struct request *rq, u64 now)
 	struct blk_stat_callback *cb;
 	struct blk_rq_stat *stat;
 	int bucket;
-	u64 value;
+	u64 start;
 
-	value = (now >= rq->io_start_time_ns) ? now - rq->io_start_time_ns : 0;
+	start = rq->io_start_time_ns;
+	if (now > start)
+		start = now;
 
-	blk_throtl_stat_add(rq, value);
+	blk_throtl_stat_add(rq, now - start);
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(cb, &q->stats->callbacks, list) {
@@ -71,7 +81,7 @@ void blk_stat_add(struct request *rq, u64 now)
 			continue;
 
 		stat = &get_cpu_ptr(cb->cpu_stat)[bucket];
-		blk_rq_stat_add(stat, value, rq->io_bytes);
+		blk_rq_stat_add(stat, start, now, rq->io_bytes);
 		put_cpu_ptr(cb->cpu_stat);
 	}
 	rcu_read_unlock();

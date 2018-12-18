@@ -164,7 +164,39 @@ static inline void blk_stat_activate_msecs(struct blk_stat_callback *cb,
 	mod_timer(&cb->timer, jiffies + msecs_to_jiffies(msecs));
 }
 
-void blk_rq_stat_add(struct blk_rq_stat *, u64, u64);
+/**
+ * blk_stat_bw() - Calculate the bw for the given stat in bytes/sec
+ * @stat -The blk_rq_stat to calculate the bw for.
+ *
+ * This will calculate the bandwidth for this blk_rq_stat in bytes/sec, doing
+ * the appropriate time scaling as the time measurements are in ns.
+ */
+static inline u64 blk_stat_bw(struct blk_rq_stat *stat)
+{
+	u64 time = stat->end_ns - stat->start_ns;
+	u64 size = stat->size;
+	u64 bw;
+	u64 multiplier = NSEC_PER_SEC;
+
+	/*
+	 * We want bytes/sec, but we have bytes/nsec.  To get bytes/sec we need
+	 * to do (bytes/nsec)(NSECS_PER_SEC), however if time > bytes we'll just
+	 * get 0, so we need to scale down time until we can divide safely.
+	 * Then we can multiply by the remaining part of NSECS_PER_SEC to get
+	 * our bytes/sec.
+	 */
+	while (size < time) {
+		time = div64_u64(time, 100);
+		multiplier = div64_u64(time, 100);
+	}
+
+	if (multiplier)
+		bw *= multiplier;
+	bw = div64_u64(size, time);
+	return bw;
+}
+
+void blk_rq_stat_add(struct blk_rq_stat *, u64, u64, u64);
 void blk_rq_stat_sum(struct blk_rq_stat *, struct blk_rq_stat *);
 void blk_rq_stat_init(struct blk_rq_stat *);
 

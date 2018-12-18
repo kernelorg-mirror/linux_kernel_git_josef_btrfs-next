@@ -458,6 +458,8 @@ struct blk_rq_stat {
 	u32 nr_samples;
 	u64 time;
 	u64 size;
+	u64 start_ns;
+	u64 end_ns;
 };
 
 #endif /* __LINUX_BLK_TYPES_H */

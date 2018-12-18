@@ -208,15 +208,16 @@ static inline void latency_stat_sum(struct iolatency_grp *iolat,
 }
 
 static inline void latency_stat_record_time(struct iolatency_grp *iolat,
-					    u64 req_time)
+					    u64 start, u64 now)
 {
 	struct latency_stat *stat = get_cpu_ptr(iolat->stats);
 	if (iolat->ssd) {
+		u64 req_time = now - start;
 		if (req_time >= iolat->min_lat_nsec)
 			stat->ps.missed++;
 		stat->ps.total++;
 	} else
-		blk_rq_stat_add(&stat->rqs, req_time, 0);
+		blk_rq_stat_add(&stat->rqs, start, now, 0);
 	put_cpu_ptr(stat);
 }
 
@@ -484,7 +485,6 @@ static void iolatency_record_time(struct iolatency_grp *iolat,
 				  bool issue_as_root)
 {
 	u64 start = bio_issue_time(issue);
-	u64 req_time;
 
 	/*
 	 * Have to do this so we are truncated to the correct time that our
@@ -495,20 +495,19 @@ static void iolatency_record_time(struct iolatency_grp *iolat,
 	if (now <= start)
 		return;
 
-	req_time = now - start;
-
 	/*
 	 * We don't want to count issue_as_root bio's in the cgroups latency
 	 * statistics as it could skew the numbers downwards.
 	 */
 	if (unlikely(issue_as_root && iolat->rq_depth.max_depth != UINT_MAX)) {
 		u64 sub = iolat->min_lat_nsec;
+		u64 req_time = now - start;
 		if (req_time < sub)
 			blkcg_add_delay(lat_to_blkg(iolat), now, sub - req_time);
 		return;
 	}
 
-	latency_stat_record_time(iolat, req_time);
+	latency_stat_record_time(iolat, start, now);
 }
 
 #define BLKIOLATENCY_MIN_ADJUST_TIME (500 * NSEC_PER_MSEC)
