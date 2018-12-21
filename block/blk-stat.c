@@ -34,7 +34,6 @@ void blk_rq_stat_sum(struct blk_rq_stat *dst, struct blk_rq_stat *src)
 
 	dst->min = min(dst->min, src->min);
 	dst->max = max(dst->max, src->max);
-	dst->batch += src->batch;
 
 	dst->mean = div_u64(src->time + dst->mean * dst->nr_samples,
 				dst->nr_samples + src->nr_samples);
@@ -71,6 +70,7 @@ void blk_stat_add(struct request *rq, u64 now)
 		start = now;
 
 	blk_throtl_stat_add(rq, now - start);
+	blk_ioweight_stat_add(rq, now);
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(cb, &q->stats->callbacks, list) {

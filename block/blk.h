@@ -297,6 +297,8 @@ static inline void blk_throtl_bio_endio(struct bio *bio) { }
 static inline void blk_throtl_stat_add(struct request *rq, u64 time) { }
 #endif
 
+extern void blk_ioweight_stat_add(struct request *rq, u64 time);
+
 #ifdef CONFIG_BOUNCE
 extern int init_emergency_isa_pool(void);
 extern void blk_queue_bounce(struct request_queue *q, struct bio **bio);
