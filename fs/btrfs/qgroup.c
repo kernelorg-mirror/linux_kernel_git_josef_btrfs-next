@@ -1565,33 +1565,6 @@ int btrfs_qgroup_trace_extent_nolock(struct btrfs_fs_info *fs_info,
 	return 0;
 }
 
-int btrfs_qgroup_trace_extent_post(struct btrfs_fs_info *fs_info,
-				   struct btrfs_qgroup_extent_record *qrecord)
-{
-	struct ulist *old_root;
-	u64 bytenr = qrecord->bytenr;
-	int ret;
-
-	ret = btrfs_find_all_roots(NULL, fs_info, bytenr, 0, &old_root, false);
-	if (ret < 0) {
-		fs_info->qgroup_flags |= BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT;
-		btrfs_warn(fs_info,
-"error accounting new delayed refs extent (err code: %d), quota inconsistent",
-			ret);
-		return 0;
-	}
-
-	/*
-	 * Here we don't need to get the lock of
-	 * trans->transaction->delayed_refs, since inserted qrecord won't
-	 * be deleted, only qrecord->node may be modified (new qrecord insert)
-	 *
-	 * So modifying qrecord->old_roots is safe here
-	 */
-	qrecord->old_roots = old_root;
-	return 0;
-}
-
 int btrfs_qgroup_trace_extent(struct btrfs_trans_handle *trans, u64 bytenr,
 			      u64 num_bytes, gfp_t gfp_flag)
 {
@@ -1615,11 +1588,9 @@ int btrfs_qgroup_trace_extent(struct btrfs_trans_handle *trans, u64 bytenr,
 	spin_lock(&delayed_refs->lock);
 	ret = btrfs_qgroup_trace_extent_nolock(fs_info, delayed_refs, record);
 	spin_unlock(&delayed_refs->lock);
-	if (ret > 0) {
+	if (ret > 0)
 		kfree(record);
-		return 0;
-	}
-	return btrfs_qgroup_trace_extent_post(fs_info, record);
+	return 0;
 }
 
 int btrfs_qgroup_trace_leaf_items(struct btrfs_trans_handle *trans,
@@ -2569,11 +2540,7 @@ int btrfs_qgroup_account_extents(struct btrfs_trans_handle *trans)
 		trace_btrfs_qgroup_account_extents(fs_info, record);
 
 		if (!ret) {
-			/*
-			 * Old roots should be searched when inserting qgroup
-			 * extent record
-			 */
-			if (WARN_ON(!record->old_roots)) {
+			if (!record->old_roots) {
 				/* Search commit root to find old_roots */
 				ret = btrfs_find_all_roots(NULL, fs_info,
 						record->bytenr, 0,
