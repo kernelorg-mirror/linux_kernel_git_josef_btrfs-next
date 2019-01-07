@@ -143,6 +143,20 @@ struct file_extent_cluster {
 	unsigned int nr;
 };
 
+/*
+ * Helper structure to keep record of a file tree whose reloc
+ * root needs to be cleaned up.
+ *
+ * Since reloc_control is used less frequently than btrfs_root, this should
+ * prevent us to add another structure in btrfs_root.
+ */
+struct dirty_source_root {
+	struct rb_node node;
+
+	/* Root must be file tree */
+	struct btrfs_root *root;
+};
+
 struct reloc_control {
 	/* block group to relocate */
 	struct btrfs_block_group_cache *block_group;
@@ -171,6 +185,9 @@ struct reloc_control {
 
 	u64 search_start;
 	u64 extents_found;
+
+	/* dirty source roots, whose reloc root needs to be cleaned up */
+	struct rb_root dirty_roots;
 
 	unsigned int stage:8;
 	unsigned int create_reloc_tree:1;
@@ -1467,15 +1484,17 @@ int btrfs_update_reloc_root(struct btrfs_trans_handle *trans,
 	struct btrfs_root_item *root_item;
 	int ret;
 
-	if (!root->reloc_root)
+	if (test_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &root->state) ||
+	    !root->reloc_root)
 		goto out;
 
 	reloc_root = root->reloc_root;
 	root_item = &reloc_root->root_item;
 
+	/* root->reloc_root will stay until current relocation finished */
 	if (fs_info->reloc_ctl->merge_reloc_tree &&
 	    btrfs_root_refs(root_item) == 0) {
-		root->reloc_root = NULL;
+		set_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &root->state);
 		__del_reloc_root(reloc_root);
 	}
 
@@ -2121,6 +2140,84 @@ static int find_next_key(struct btrfs_path *path, int level,
 }
 
 /*
+ * Helper to insert current root into reloc_control::dirty_roots
+ */
+static int insert_dirty_root(struct btrfs_trans_handle *trans,
+			     struct reloc_control *rc,
+			     struct btrfs_root *root)
+{
+	struct rb_node **p = &rc->dirty_roots.rb_node;
+	struct rb_node *parent = NULL;
+	struct dirty_source_root *entry;
+	struct btrfs_root *reloc_root = root->reloc_root;
+	struct btrfs_root_item *reloc_root_item;
+	u64 root_objectid = root->root_key.objectid;
+
+	/* @root must be a file tree root*/
+	ASSERT(root_objectid != BTRFS_TREE_RELOC_OBJECTID);
+	ASSERT(reloc_root);
+
+	reloc_root_item = &reloc_root->root_item;
+	memset(&reloc_root_item->drop_progress, 0,
+		sizeof(reloc_root_item->drop_progress));
+	reloc_root_item->drop_level = 0;
+	btrfs_set_root_refs(reloc_root_item, 0);
+	btrfs_update_reloc_root(trans, root);
+
+	/* We're at relocation route, not writeback route, GFP_KERNEL is OK */
+	entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry)
+		return -ENOMEM;
+	btrfs_grab_fs_root(root);
+	entry->root = root;
+	while (*p) {
+		struct dirty_source_root *cur_entry;
+
+		parent = *p;
+		cur_entry = rb_entry(parent, struct dirty_source_root, node);
+
+		if (root_objectid < cur_entry->root->root_key.objectid)
+			p = &(*p)->rb_left;
+		else if (root_objectid > cur_entry->root->root_key.objectid)
+			p = &(*p)->rb_right;
+		else {
+			/* This root is already dirtied */
+			btrfs_put_fs_root(root);
+			kfree(entry);
+			return 0;
+		}
+	}
+	rb_link_node(&entry->node, parent, p);
+	rb_insert_color(&entry->node, &rc->dirty_roots);
+	return 0;
+}
+
+static int clean_dirty_root(struct reloc_control *rc)
+{
+	struct dirty_source_root *entry;
+	struct dirty_source_root *next;
+	int err = 0;
+	int ret;
+
+	rbtree_postorder_for_each_entry_safe(entry, next, &rc->dirty_roots,
+					     node) {
+		struct btrfs_root *reloc_root = entry->root->reloc_root;
+
+		clear_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &entry->root->state);
+		entry->root->reloc_root = NULL;
+		if (reloc_root) {
+			ret = btrfs_drop_snapshot(reloc_root, NULL, 0, 1);
+			if (ret < 0 && !err)
+				err = ret;
+		}
+		btrfs_put_fs_root(entry->root);
+		kfree(entry);
+	}
+	rc->dirty_roots = RB_ROOT;
+	return err;
+}
+
+/*
  * merge the relocated tree blocks in reloc tree with corresponding
  * fs tree.
  */
@@ -2259,13 +2356,8 @@ static noinline_for_stack int merge_reloc_root(struct reloc_control *rc,
 out:
 	btrfs_free_path(path);
 
-	if (err == 0) {
-		memset(&root_item->drop_progress, 0,
-		       sizeof(root_item->drop_progress));
-		root_item->drop_level = 0;
-		btrfs_set_root_refs(root_item, 0);
-		btrfs_update_reloc_root(trans, root);
-	}
+	if (err == 0)
+		err = insert_dirty_root(trans, rc, root);
 
 	if (trans)
 		btrfs_end_transaction_throttle(trans);
@@ -2409,14 +2501,6 @@ again:
 			}
 		} else {
 			list_del_init(&reloc_root->root_list);
-		}
-
-		ret = btrfs_drop_snapshot(reloc_root, rc->block_rsv, 0, 1);
-		if (ret < 0) {
-			if (list_empty(&reloc_root->root_list))
-				list_add_tail(&reloc_root->root_list,
-					      &reloc_roots);
-			goto out;
 		}
 	}
 
@@ -4079,6 +4163,9 @@ restart:
 		goto out_free;
 	}
 	btrfs_commit_transaction(trans);
+	ret = clean_dirty_root(rc);
+	if (ret < 0 && !err)
+		err = ret;
 out_free:
 	btrfs_free_block_rsv(fs_info, rc->block_rsv);
 	btrfs_free_path(path);
@@ -4468,6 +4555,10 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 		goto out_free;
 	}
 	err = btrfs_commit_transaction(trans);
+
+	ret = clean_dirty_root(rc);
+	if (ret < 0 && !err)
+		err = ret;
 out_free:
 	kfree(rc);
 out:
