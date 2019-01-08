@@ -1546,43 +1546,22 @@ int btrfs_qgroup_trace_extent_nolock(struct btrfs_fs_info *fs_info,
 		parent_node = *p;
 		entry = rb_entry(parent_node, struct btrfs_qgroup_extent_record,
 				 node);
-		if (bytenr < entry->bytenr)
+		if (bytenr < entry->bytenr) {
 			p = &(*p)->rb_left;
-		else if (bytenr > entry->bytenr)
+		} else if (bytenr > entry->bytenr) {
 			p = &(*p)->rb_right;
-		else
+		} else {
+			if (record->data_rsv && !entry->data_rsv) {
+				entry->data_rsv = record->data_rsv;
+				entry->data_rsv_refroot =
+					record->data_rsv_refroot;
+			}
 			return 1;
+		}
 	}
 
 	rb_link_node(&record->node, parent_node, p);
 	rb_insert_color(&record->node, &delayed_refs->dirty_extent_root);
-	return 0;
-}
-
-int btrfs_qgroup_trace_extent_post(struct btrfs_fs_info *fs_info,
-				   struct btrfs_qgroup_extent_record *qrecord)
-{
-	struct ulist *old_root;
-	u64 bytenr = qrecord->bytenr;
-	int ret;
-
-	ret = btrfs_find_all_roots(NULL, fs_info, bytenr, 0, &old_root, false);
-	if (ret < 0) {
-		fs_info->qgroup_flags |= BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT;
-		btrfs_warn(fs_info,
-"error accounting new delayed refs extent (err code: %d), quota inconsistent",
-			ret);
-		return 0;
-	}
-
-	/*
-	 * Here we don't need to get the lock of
-	 * trans->transaction->delayed_refs, since inserted qrecord won't
-	 * be deleted, only qrecord->node may be modified (new qrecord insert)
-	 *
-	 * So modifying qrecord->old_roots is safe here
-	 */
-	qrecord->old_roots = old_root;
 	return 0;
 }
 
@@ -1597,7 +1576,7 @@ int btrfs_qgroup_trace_extent(struct btrfs_trans_handle *trans, u64 bytenr,
 	if (!test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags)
 	    || bytenr == 0 || num_bytes == 0)
 		return 0;
-	record = kmalloc(sizeof(*record), gfp_flag);
+	record = kzalloc(sizeof(*record), gfp_flag);
 	if (!record)
 		return -ENOMEM;
 
@@ -1609,11 +1588,9 @@ int btrfs_qgroup_trace_extent(struct btrfs_trans_handle *trans, u64 bytenr,
 	spin_lock(&delayed_refs->lock);
 	ret = btrfs_qgroup_trace_extent_nolock(fs_info, delayed_refs, record);
 	spin_unlock(&delayed_refs->lock);
-	if (ret > 0) {
+	if (ret > 0)
 		kfree(record);
-		return 0;
-	}
-	return btrfs_qgroup_trace_extent_post(fs_info, record);
+	return 0;
 }
 
 int btrfs_qgroup_trace_leaf_items(struct btrfs_trans_handle *trans,
@@ -2017,85 +1994,30 @@ out:
 	return ret;
 }
 
-/*
- * Inform qgroup to trace subtree swap used in balance.
- *
- * Unlike btrfs_qgroup_trace_subtree(), this function will only trace
- * new tree blocks whose generation is equal to (or larger than) @last_snapshot.
- *
- * Will go down the tree block pointed by @dst_eb (pointed by @dst_parent and
- * @dst_slot), and find any tree blocks whose generation is at @last_snapshot,
- * and then go down @src_eb (pointed by @src_parent and @src_slot) to find
- * the counterpart of the tree block, then mark both tree blocks as qgroup dirty,
- * and skip all tree blocks whose generation is smaller than last_snapshot.
- *
- * This would skip tons of tree blocks of original btrfs_qgroup_trace_subtree(),
- * which could be the cause of very slow balance if the file tree is large.
- *
- * @src_parent, @src_slot: pointer to src (file tree) eb.
- * @dst_parent, @dst_slot: pointer to dst (reloc tree) eb.
- */
-int btrfs_qgroup_trace_subtree_swap(struct btrfs_trans_handle *trans,
-				struct btrfs_block_group_cache *bg_cache,
-				struct extent_buffer *src_parent, int src_slot,
-				struct extent_buffer *dst_parent, int dst_slot,
-				u64 last_snapshot)
+static int qgroup_trace_subtree_swap(struct btrfs_trans_handle *trans,
+				struct extent_buffer *src_eb,
+				struct extent_buffer *dst_eb,
+				u64 last_snapshot, bool trace_leaf)
 {
 	struct btrfs_fs_info *fs_info = trans->fs_info;
 	struct btrfs_path *dst_path = NULL;
-	struct btrfs_key first_key;
-	struct extent_buffer *src_eb = NULL;
-	struct extent_buffer *dst_eb = NULL;
-	bool trace_leaf = false;
-	u64 child_gen;
-	u64 child_bytenr;
 	int level;
 	int ret;
 
 	if (!test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags))
 		return 0;
 
-	/* Check parameter order */
-	if (btrfs_node_ptr_generation(src_parent, src_slot) >
-	    btrfs_node_ptr_generation(dst_parent, dst_slot)) {
+	/* Wrong parameter order */
+	if (btrfs_header_generation(src_eb) > btrfs_header_generation(dst_eb)) {
 		btrfs_err_rl(fs_info,
 		"%s: bad parameter order, src_gen=%llu dst_gen=%llu", __func__,
-			btrfs_node_ptr_generation(src_parent, src_slot),
-			btrfs_node_ptr_generation(dst_parent, dst_slot));
+			     btrfs_header_generation(src_eb),
+			     btrfs_header_generation(dst_eb));
 		return -EUCLEAN;
 	}
 
-	/*
-	 * Only trace leaf if we're relocating data block groups, this could
-	 * reduce tons of data extents tracing for meta/sys bg relocation.
-	 */
-	if (bg_cache->flags & BTRFS_BLOCK_GROUP_DATA)
-		trace_leaf = true;
-	/* Read out real @src_eb, pointed by @src_parent and @src_slot */
-	child_bytenr = btrfs_node_blockptr(src_parent, src_slot);
-	child_gen = btrfs_node_ptr_generation(src_parent, src_slot);
-	btrfs_node_key_to_cpu(src_parent, &first_key, src_slot);
-
-	src_eb = read_tree_block(fs_info, child_bytenr, child_gen,
-			btrfs_header_level(src_parent) - 1, &first_key);
-	if (IS_ERR(src_eb)) {
-		ret = PTR_ERR(src_eb);
-		goto out;
-	}
-
-	/* Read out real @dst_eb, pointed by @src_parent and @src_slot */
-	child_bytenr = btrfs_node_blockptr(dst_parent, dst_slot);
-	child_gen = btrfs_node_ptr_generation(dst_parent, dst_slot);
-	btrfs_node_key_to_cpu(dst_parent, &first_key, dst_slot);
-
-	dst_eb = read_tree_block(fs_info, child_bytenr, child_gen,
-			btrfs_header_level(dst_parent) - 1, &first_key);
-	if (IS_ERR(dst_eb)) {
-		ret = PTR_ERR(dst_eb);
-		goto out;
-	}
-
-	if (!extent_buffer_uptodate(src_eb) || !extent_buffer_uptodate(dst_eb)) {
+	if (!extent_buffer_uptodate(src_eb) ||
+	    !extent_buffer_uptodate(dst_eb)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -2106,14 +2028,13 @@ int btrfs_qgroup_trace_subtree_swap(struct btrfs_trans_handle *trans,
 		ret = -ENOMEM;
 		goto out;
 	}
-
 	/* For dst_path */
 	extent_buffer_get(dst_eb);
 	dst_path->nodes[level] = dst_eb;
 	dst_path->slots[level] = 0;
 	dst_path->locks[level] = 0;
 
-	/* Do the generation-aware breadth-first search */
+	/* Do the generation aware breadth-first search */
 	ret = qgroup_trace_new_subtree_blocks(trans, src_eb, dst_path, level,
 					      level, last_snapshot, trace_leaf);
 	if (ret < 0)
@@ -2121,8 +2042,6 @@ int btrfs_qgroup_trace_subtree_swap(struct btrfs_trans_handle *trans,
 	ret = 0;
 
 out:
-	free_extent_buffer(src_eb);
-	free_extent_buffer(dst_eb);
 	btrfs_free_path(dst_path);
 	if (ret < 0)
 		fs_info->qgroup_flags |= BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT;
@@ -2563,11 +2482,7 @@ int btrfs_qgroup_account_extents(struct btrfs_trans_handle *trans)
 		trace_btrfs_qgroup_account_extents(fs_info, record);
 
 		if (!ret) {
-			/*
-			 * Old roots should be searched when inserting qgroup
-			 * extent record
-			 */
-			if (WARN_ON(!record->old_roots)) {
+			if (!record->old_roots) {
 				/* Search commit root to find old_roots */
 				ret = btrfs_find_all_roots(NULL, fs_info,
 						record->bytenr, 0,
@@ -2576,6 +2491,11 @@ int btrfs_qgroup_account_extents(struct btrfs_trans_handle *trans)
 					goto cleanup;
 			}
 
+			/* Free the reserved data space */
+			btrfs_qgroup_free_refroot(fs_info,
+					record->data_rsv_refroot,
+					record->data_rsv,
+					BTRFS_QGROUP_RSV_DATA);
 			/*
 			 * Use SEQ_LAST as time_seq to do special search, which
 			 * doesn't lock tree or delayed_refs and search current
@@ -3782,4 +3702,221 @@ void btrfs_qgroup_check_reserved_leak(struct inode *inode)
 
 	}
 	extent_changeset_release(&changeset);
+}
+
+/*
+ * Delete all swapped blocks record of @root.
+ * Every record here means we skipped a full subtree scan for qgroup.
+ *
+ * Get called when commit one transaction.
+ */
+void btrfs_qgroup_clean_swapped_blocks(struct btrfs_root *root)
+{
+	struct btrfs_qgroup_swapped_blocks *swapped_blocks;
+	int i;
+
+	swapped_blocks = &root->swapped_blocks;
+
+	spin_lock(&swapped_blocks->lock);
+	if (!swapped_blocks->swapped)
+		goto out;
+	for (i = 0; i < BTRFS_MAX_LEVEL; i++) {
+		struct rb_root *cur_root = &swapped_blocks->blocks[i];
+		struct btrfs_qgroup_swapped_block *entry;
+		struct btrfs_qgroup_swapped_block *next;
+
+		rbtree_postorder_for_each_entry_safe(entry, next, cur_root,
+						     node)
+			kfree(entry);
+		swapped_blocks->blocks[i] = RB_ROOT;
+	}
+	swapped_blocks->swapped = false;
+out:
+	spin_unlock(&swapped_blocks->lock);
+}
+
+/*
+ * Adding subtree roots record into @file_root.
+ *
+ * @file_root:		tree root of the file tree get swapped
+ * @bg:			block group under balance
+ * @file_parent/slot:	pointer to the subtree root in file tree
+ * @reloc_parent/slot:	pointer to the subtree root in reloc tree
+ *			BOTH POINTERS ARE BEFORE TREE SWAP
+ * @last_snapshot:	last snapshot generation of the file tree
+ */
+int btrfs_qgroup_add_swapped_blocks(struct btrfs_trans_handle *trans,
+		struct btrfs_root *file_root,
+		struct btrfs_block_group_cache *bg,
+		struct extent_buffer *file_parent, int file_slot,
+		struct extent_buffer *reloc_parent, int reloc_slot,
+		u64 last_snapshot)
+{
+	int level = btrfs_header_level(file_parent) - 1;
+	struct btrfs_qgroup_swapped_blocks *blocks = &file_root->swapped_blocks;
+	struct btrfs_fs_info *fs_info = file_root->fs_info;
+	struct btrfs_qgroup_swapped_block *block;
+	struct rb_node **p = &blocks->blocks[level].rb_node;
+	struct rb_node *parent = NULL;
+	int ret = 0;
+
+	if (!test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags))
+		return 0;
+
+	if (btrfs_node_ptr_generation(file_parent, file_slot) >
+		btrfs_node_ptr_generation(reloc_parent, reloc_slot)) {
+		btrfs_err_rl(fs_info,
+		"%s: bad parameter order, file_gen=%llu reloc_gen=%llu",
+			__func__,
+			btrfs_node_ptr_generation(file_parent, file_slot),
+			btrfs_node_ptr_generation(reloc_parent, reloc_slot));
+		return -EUCLEAN;
+	}
+
+	block = kmalloc(sizeof(*block), GFP_NOFS);
+	if (!block) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/*
+	 * @reloc_parent/slot is still *BEFORE* swap, while @block is going to
+	 * record the bytenr *AFTER* swap, so we do the swap here.
+	 */
+	block->file_bytenr = btrfs_node_blockptr(reloc_parent, reloc_slot);
+	block->file_generation = btrfs_node_ptr_generation(reloc_parent,
+							   reloc_slot);
+	block->reloc_bytenr = btrfs_node_blockptr(file_parent, file_slot);
+	block->reloc_generation = btrfs_node_ptr_generation(file_parent,
+							    file_slot);
+	block->last_snapshot = last_snapshot;
+	block->level = level;
+	if (bg->flags & BTRFS_BLOCK_GROUP_DATA)
+		block->trace_leaf = true;
+	else
+		block->trace_leaf = false;
+	btrfs_node_key_to_cpu(reloc_parent, &block->first_key, reloc_slot);
+
+	/* Insert @block into @blocks */
+	spin_lock(&blocks->lock);
+	while (*p) {
+		struct btrfs_qgroup_swapped_block *entry;
+
+		parent = *p;
+		entry = rb_entry(parent, struct btrfs_qgroup_swapped_block,
+				 node);
+
+		if (entry->file_bytenr < block->file_bytenr)
+			p = &(*p)->rb_left;
+		else if (entry->file_bytenr > block->file_bytenr)
+			p = &(*p)->rb_right;
+		else {
+			if (entry->file_generation != block->file_generation ||
+			    entry->reloc_bytenr != block->reloc_bytenr ||
+			    entry->reloc_generation !=
+			    block->reloc_generation) {
+				WARN_ON_ONCE(1);
+				ret = -EEXIST;
+			}
+			kfree(block);
+			goto out_unlock;
+		}
+	}
+	rb_link_node(&block->node, parent, p);
+	rb_insert_color(&block->node, &blocks->blocks[level]);
+	blocks->swapped = true;
+out_unlock:
+	spin_unlock(&blocks->lock);
+out:
+	if (ret < 0)
+		fs_info->qgroup_flags |=
+			BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT;
+	return ret;
+}
+
+/*
+ * Check if the tree block is a subtree root, and if so do the needed
+ * delayed subtree trace for qgroup.
+ *
+ * This is called during btrfs_cow_block().
+ */
+int btrfs_qgroup_trace_subtree_after_cow(struct btrfs_trans_handle *trans,
+		struct btrfs_root *root, struct extent_buffer *file_eb)
+{
+	struct btrfs_fs_info *fs_info = root->fs_info;
+	struct btrfs_qgroup_swapped_blocks *blocks = &root->swapped_blocks;
+	struct btrfs_qgroup_swapped_block *block;
+	struct extent_buffer *reloc_eb = NULL;
+	struct rb_node *n;
+	bool found = false;
+	bool swapped = false;
+	int level = btrfs_header_level(file_eb);
+	int ret = 0;
+	int i;
+
+	if (!test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags))
+		return 0;
+	if (!is_fstree(root->root_key.objectid) || !root->reloc_root)
+		return 0;
+
+	spin_lock(&blocks->lock);
+	if (!blocks->swapped) {
+		spin_unlock(&blocks->lock);
+		goto out;
+	}
+	n = blocks->blocks[level].rb_node;
+
+	while (n) {
+		block = rb_entry(n, struct btrfs_qgroup_swapped_block, node);
+		if (block->file_bytenr < file_eb->start)
+			n = n->rb_left;
+		else if (block->file_bytenr > file_eb->start)
+			n = n->rb_right;
+		else {
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		spin_unlock(&blocks->lock);
+		goto out;
+	}
+	/* Found one, remove it from @blocks first and update blocks->swapped */
+	rb_erase(&block->node, &blocks->blocks[level]);
+	for (i = 0; i < BTRFS_MAX_LEVEL; i++) {
+		if (RB_EMPTY_ROOT(&blocks->blocks[i])) {
+			swapped = true;
+			break;
+		}
+	}
+	blocks->swapped = swapped;
+	spin_unlock(&blocks->lock);
+
+	/* Read out reloc subtree root */
+	reloc_eb = read_tree_block(fs_info, block->reloc_bytenr,
+				   block->reloc_generation, block->level,
+				   &block->first_key);
+	if (IS_ERR(reloc_eb)) {
+		ret = PTR_ERR(file_eb);
+		reloc_eb = NULL;
+		goto free_out;
+	}
+	if (!extent_buffer_uptodate(reloc_eb)) {
+		ret = -EIO;
+		goto free_out;
+	}
+
+	ret = qgroup_trace_subtree_swap(trans, reloc_eb, file_eb,
+			block->last_snapshot, block->trace_leaf);
+free_out:
+	kfree(block);
+	free_extent_buffer(reloc_eb);
+out:
+	if (ret < 0) {
+		btrfs_err_rl(fs_info,
+			     "failed to account subtree at bytenr %llu: %d",
+			     file_eb->start, ret);
+		fs_info->qgroup_flags |= BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT;
+	}
+	return ret;
 }
