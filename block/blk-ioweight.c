@@ -63,6 +63,7 @@ struct ioweight_grp {
 	struct ioweight_stat sum[NR_BUCKETS];
 	u64 children_total_load;
 	u64 load;
+	u64 io_time;
 };
 
 struct coefficient {
@@ -127,6 +128,8 @@ static inline u64 ioweight_stat_bw(struct ioweight_stat *stat)
 
 static inline void ioweight_grp_sum_stats(struct ioweight_grp *ioweight)
 {
+	u64 total_time = 0;
+	u64 total_ios = 0;
 	int bucket, cpu;
 
 	for (bucket = 0; bucket < NR_BUCKETS; bucket++)
@@ -139,9 +142,16 @@ static inline void ioweight_grp_sum_stats(struct ioweight_grp *ioweight)
 		for (bucket = 0; bucket < NR_BUCKETS; bucket++) {
 			ioweight_stat_sum(&ioweight->sum[bucket],
 					  &stat[bucket]);
+			total_ios += ioweight->sum[bucket].nr_ios;
+			total_time += (ioweight->sum[bucket].end_ns -
+				       ioweight->sum[bucket].start_ns);
 			ioweight_stat_init(&stat[bucket]);
 		}
 	}
+	total_time = max_t(u64, total_time, 1);
+	total_ios = max_t(u64, total_ios, 1);
+	ioweight->io_time = max(NSEC_PER_USEC,
+				div64_u64(total_time, total_ios));
 }
 
 enum {
@@ -731,6 +741,7 @@ static void ioweight_pd_init(struct blkg_policy_data *pd)
 	ioweight->rq_depth.default_depth = ioweight->rq_depth.queue_depth;
 	ioweight->blkioweight = blkioweight;
 	ioweight->weight = 0;
+	ioweight->io_time = 5 * NSECS_PER_MSEC;
 	atomic64_set(&ioweight->child_weight, 0);
 }
 
