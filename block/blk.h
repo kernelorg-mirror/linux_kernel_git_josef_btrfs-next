@@ -297,7 +297,11 @@ static inline void blk_throtl_bio_endio(struct bio *bio) { }
 static inline void blk_throtl_stat_add(struct request *rq, u64 time) { }
 #endif
 
+#ifdef CONFIG_BLK_CGROUP_IOWEIGHT
 extern void blk_ioweight_stat_add(struct request *rq, u64 time);
+#else
+static inline void blk_ioweight_stat_add(struct request *rq, u64 time) {}
+#endif
 
 #ifdef CONFIG_BOUNCE
 extern int init_emergency_isa_pool(void);

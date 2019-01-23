@@ -9,17 +9,23 @@
 #include <linux/memcontrol.h>
 #include <linux/sched/loadavg.h>
 #include <linux/sched/signal.h>
+#include <linux/time64.h>
 #include <trace/events/block.h>
 #include "blk-rq-qos.h"
 #include "blk-stat.h"
+#include "ordered-wq.h"
 
 static struct blkcg_policy blkcg_policy_ioweight;
 struct ioweight_grp;
 
 struct blk_ioweight {
 	struct rq_qos rqos;
+	ordered_wait_queue_head_t owq;
 	u64 saturation;
 	atomic_t enabled;
+	atomic64_t iocounter;
+	u64 last_io_count;
+	atomic_t global_waiters;
 	struct timer_list timer;
 };
 
@@ -31,6 +37,29 @@ static inline struct blk_ioweight *BLKIOWEIGHT(struct rq_qos *rqos)
 static inline bool blk_ioweight_enabled(struct blk_ioweight *blkioweight)
 {
 	return atomic_read(&blkioweight->enabled) > 0;
+}
+
+static inline void
+blk_ioweight_inc_global_waiter(struct blk_ioweight *blkioweight)
+{
+	atomic_inc(&blkioweight->global_waiters);
+}
+
+static inline void
+blk_ioweight_dec_global_waiter(struct blk_ioweight *blkioweight)
+{
+	if (atomic_dec_and_test(&blkioweight->global_waiters))
+		ordered_wake_up_all(&blkioweight->owq);
+}
+
+static inline void blk_ioweight_io_done(struct blk_ioweight *blkioweight)
+{
+	u64 key;
+
+	if (atomic_read(&blkioweight->global_waiters) == 0)
+		return;
+	key = atomic64_inc_return(&blkioweight->iocounter);
+	ordered_wake_up(&blkioweight->owq, key);
 }
 
 #define TIME_SLOTS 5
@@ -56,9 +85,11 @@ struct ioweight_grp {
 	struct rq_wait rq_wait;
 	struct ioweight_grp *next;
 
+	u64 io_charge;
 	u64 weight;
 	atomic64_t child_weight;
 
+	char *name;
 	struct ioweight_stat __percpu *stat;
 	struct ioweight_stat sum[NR_BUCKETS];
 	u64 children_total_load;
@@ -150,8 +181,8 @@ static inline void ioweight_grp_sum_stats(struct ioweight_grp *ioweight)
 	}
 	total_time = max_t(u64, total_time, 1);
 	total_ios = max_t(u64, total_ios, 1);
-	ioweight->io_time = max(NSEC_PER_USEC,
-				div64_u64(total_time, total_ios));
+	ioweight->io_time = max_t(u64, NSEC_PER_USEC,
+				  div64_u64(total_time, total_ios));
 }
 
 enum {
@@ -173,12 +204,14 @@ static struct coefficient ssd_coefficients[] = {
 	[TRIM_BW_COEF]		= { .numerator = 91, .denominator = 100000000000ULL}, // 9.10e-10
 };
 
+#if 0
 static struct coefficient hdd_coefficients[] = {
 	[READ_IOPS_COEF]	= { .numerator = 131, .denominator = 100000 }, // 1.31e-3
 	[READ_BW_COEF]		= { .numerator = 131, .denominator = 1000000000ULL}, // 1.31e-7
 	[WRITE_IOPS_COEF]	= { .numerator = 257, .denominator = 1000ULL}, // .257
 	[WRITE_BW_COEF]		= { .numerator = 503, .denominator = 1000000000ULL}, // 5.03e-9
 };
+#endif
 
 static inline u64 multiply_stat_by_coef(u64 val, struct coefficient *coef)
 {
@@ -227,12 +260,26 @@ static bool ioweight_acquire_inflight(struct rq_wait *rqw, void *private_data)
 	return rq_wait_inc_below(rqw, READ_ONCE(ioweight->rq_depth.max_depth));
 }
 
+static noinline void wait_global_counter(struct ioweight_grp *ioweight, u64 key)
+{
+	struct blk_ioweight *blkioweight = ioweight->blkioweight;
+	ordered_wait_queue_entry_t entry;
+
+	key += atomic64_read(&blkioweight->iocounter);
+	init_ordered_wait_queue_entry(&entry, current, key);
+	ordered_prepare_to_wait(&blkioweight->owq, &entry,
+				TASK_UNINTERRUPTIBLE);
+	io_schedule();
+	ordered_finish_wait(&blkioweight->owq, &entry);
+}
+
 static void __blkcg_ioweight_throttle(struct rq_qos *rqos,
 				       struct ioweight_grp *ioweight,
 				       bool issue_as_root,
 				       bool use_memdelay)
 {
 	struct rq_wait *rqw = &ioweight->rq_wait;
+	u64 key = READ_ONCE(ioweight->io_charge);
 
 	if (atomic_read(&ioweight_to_blkg(ioweight)->use_delay))
 		blkcg_schedule_throttle(rqos->q, use_memdelay);
@@ -250,6 +297,10 @@ static void __blkcg_ioweight_throttle(struct rq_qos *rqos,
 	}
 
 	rq_qos_wait(rqw, ioweight, ioweight_acquire_inflight, ioweight_cleanup_cb);
+	if (key == 0)
+		return;
+
+	wait_global_counter(ioweight, key);
 }
 
 static void blkcg_ioweight_throttle(struct rq_qos *rqos, struct bio *bio)
@@ -260,6 +311,7 @@ static void blkcg_ioweight_throttle(struct rq_qos *rqos, struct bio *bio)
 
 	if (!blk_ioweight_enabled(blkioweight))
 		return;
+
 
 	while (blkg && blkg->parent) {
 		struct ioweight_grp *ioweight = blkg_to_ioweight(blkg);
@@ -325,7 +377,6 @@ static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
 	struct blkcg_gq *blkg;
 	struct rq_wait *rqw;
 	struct ioweight_grp *ioweight;
-	bool enabled = false;
 
 	blkg = bio->bi_blkg;
 	if (!blkg || !bio_flagged(bio, BIO_TRACKED))
@@ -337,6 +388,8 @@ static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
 
 	if (!blk_ioweight_enabled(ioweight->blkioweight))
 		return;
+
+	blk_ioweight_io_done(ioweight->blkioweight);
 
 	while (blkg && blkg->parent) {
 		ioweight = blkg_to_ioweight(blkg);
@@ -441,12 +494,18 @@ static void scale_up(struct ioweight_grp *ioweight)
 	unsigned long qd = ioweight->blkioweight->rqos.q->nr_requests;
 	unsigned long old = ioweight->rq_depth.max_depth;
 	unsigned long scale = scale_amount(qd, true);
+	u64 io_charge = ioweight->io_charge;
 
 	if (old > qd)
 		old = qd;
 
-	if (old == 1 && blkcg_unuse_delay(ioweight_to_blkg(ioweight)))
+	if (old == 1 && io_charge) {
+		io_charge--;
+		WRITE_ONCE(ioweight->io_charge, io_charge);
+		if (io_charge == 0)
+			blk_ioweight_dec_global_waiter(ioweight->blkioweight);
 		return;
+	}
 
 	if (old < qd) {
 		old = min(old + scale, qd);
@@ -467,11 +526,18 @@ static void scale_down(struct ioweight_grp *ioweight)
 		old = qd;
 
 	if (old == 1) {
-		trace_printk("weight %llu add delay\n", ioweight->weight);
+		u64 io_charge = ioweight->io_charge + 1;
+		WRITE_ONCE(ioweight->io_charge, io_charge);
+		if (io_charge == 1)
+			blk_ioweight_inc_global_waiter(ioweight->blkioweight);
+		trace_printk("weight %llu add charge %llu\n", ioweight->weight,
+			     io_charge);
+		/*
 		blkcg_add_delay(ioweight_to_blkg(ioweight),
 				ktime_to_ns(ktime_get()),
 				250 * NSEC_PER_MSEC);
 		blkcg_use_delay(ioweight_to_blkg(ioweight));
+		*/
 		return;
 	}
 
@@ -498,7 +564,15 @@ static void blkioweight_timer_fn(struct timer_list *t)
 	struct blkcg_gq *blkg;
 	struct cgroup_subsys_state *pos_css;
 	struct ioweight_grp *head = NULL, *next;
+	bool reset_io = false;
+	bool rearm = false;
 
+	if (atomic_read(&blkioweight->global_waiters)) {
+		u64 cur = atomic64_read(&blkioweight->iocounter);
+		if (blkioweight->last_io_count == cur)
+			reset_io = true;
+		blkioweight->last_io_count = cur;
+	}
 	rcu_read_lock();
 	blkg_for_each_descendant_pre(blkg, pos_css,
 				     blkioweight->rqos.q->root_blkg) {
@@ -549,6 +623,7 @@ static void blkioweight_timer_fn(struct timer_list *t)
 			continue;
 		}
 
+		rearm = true;
 		child_total_load = max_t(u64, 1, parent->children_total_load);
 		child_weight = max_t(u64, 1, atomic64_read(&parent->child_weight));
 		load = max_t(u64, head->load, 1);
@@ -556,16 +631,26 @@ static void blkioweight_timer_fn(struct timer_list *t)
 
 		actual_share = div64_u64(load * 100, child_total_load);
 		weight_share = div64_u64(weight * 100, child_weight);
-		trace_printk("weight %llu load %llu parent total load %llu, actual_share %llu, weight_share %llu\n",
-			     head->weight, head->load, parent->children_total_load,
+		trace_printk("%s: weight %llu load %llu parent total load %llu, actual_share %llu, weight_share %llu\n",
+			     head->name, head->weight, head->load, parent->children_total_load,
 			     actual_share, weight_share);
 
 		if (actual_share > weight_share)
 			scale_down(head);
 		if (actual_share < weight_share)
 			scale_up(head);
+		if (reset_io) {
+			if (head->io_charge) {
+				WRITE_ONCE(head->io_charge, 0);
+				blk_ioweight_dec_global_waiter(blkioweight);
+			}
+		}
 		blkg_put(blkg);
 	}
+	if (reset_io)
+		ordered_wake_up_all(&blkioweight->owq);
+	if (rearm && !timer_pending(&blkioweight->timer))
+		mod_timer(&blkioweight->timer, jiffies + HZ);
 }
 
 int blk_ioweight_init(struct request_queue *q)
@@ -586,6 +671,10 @@ int blk_ioweight_init(struct request_queue *q)
 	rq_qos_add(q, rqos);
 
 	printk(KERN_ERR "JOSEF: activate blkcg policy\n");
+	init_ordered_wait_queue_head(&blkioweight->owq);
+	atomic64_set(&blkioweight->iocounter, 0);
+	atomic_set(&blkioweight->global_waiters, 0);
+
 	ret = blkcg_activate_policy(q, &blkcg_policy_ioweight);
 	if (ret) {
 		rq_qos_del(q, rqos);
@@ -605,18 +694,29 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 	struct blkg_conf_ctx ctx;
 	struct ioweight_grp *ioweight;
 	struct blk_ioweight *blkioweight;
-	char *p, *tok;
+	char *p, *tok, *name = NULL;
 	u64 weight = 0;
 	u64 oldval;
 	int ret;
 
+	if (of->kn->parent)
+		name = kstrdup(of->kn->parent->name, GFP_KERNEL);
+
+	printk(KERN_ERR "setting limit?\n");
+	printk(KERN_ERR "set limit on %s\n", name);
 	ret = blkg_conf_prep(blkcg, &blkcg_policy_ioweight, buf, &ctx);
 	if (ret) {
 		printk(KERN_ERR "conf prep failed\n");
+		kfree(name);
 		return ret;
 	}
 
 	ioweight = blkg_to_ioweight(ctx.blkg);
+	if (!ioweight) {
+		printk(KERN_ERR "wtf, no ioweight?\n");
+		ret = -EINVAL;
+		goto out;
+	}
 	p = ctx.body;
 
 	ret = -EINVAL;
@@ -641,7 +741,11 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 
 	blkg = ctx.blkg;
 	oldval = ioweight->weight;
-
+	blkioweight = ioweight->blkioweight;
+	if (ioweight->name == NULL) {
+		ioweight->name = name;
+		name = NULL;
+	}
 	if (blkg->parent) {
 		struct ioweight_grp *parent = blkg_to_ioweight(blkg->parent);
 		if (parent) {
@@ -650,19 +754,24 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 		}
 	}
 	ioweight->weight = weight;
+	if (ioweight->io_charge) {
+		WRITE_ONCE(ioweight->io_charge, 0);
+		blk_ioweight_dec_global_waiter(blkioweight);
+	}
 
 	WRITE_ONCE(ioweight->rq_depth.max_depth, UINT_MAX);
 	wake_up_all(&ioweight->rq_wait.wait);
-	blkioweight = ioweight->blkioweight;
 	if (oldval && !weight)
 		atomic_dec(&blkioweight->enabled);
 	if (!oldval && weight)
 		atomic_inc(&blkioweight->enabled);
+	ordered_wake_up_all(&blkioweight->owq);
 	ret = 0;
 out:
 	if (ret)
 		printk(KERN_ERR "hmm something failed\n");
 	blkg_conf_finish(&ctx);
+	kfree(name);
 	return ret ?: nbytes;
 }
 
@@ -741,7 +850,7 @@ static void ioweight_pd_init(struct blkg_policy_data *pd)
 	ioweight->rq_depth.default_depth = ioweight->rq_depth.queue_depth;
 	ioweight->blkioweight = blkioweight;
 	ioweight->weight = 0;
-	ioweight->io_time = 5 * NSECS_PER_MSEC;
+	ioweight->io_time = 5 * NSEC_PER_MSEC;
 	atomic64_set(&ioweight->child_weight, 0);
 }
 

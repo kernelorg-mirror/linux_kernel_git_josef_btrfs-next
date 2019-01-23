@@ -850,6 +850,8 @@ int blkg_conf_prep(struct blkcg *blkcg, const struct blkcg_policy *pol,
 	}
 
 	q = disk->queue;
+	blk_mq_freeze_queue(q);
+	blk_mq_quiesce_queue(q);
 
 	rcu_read_lock();
 	spin_lock_irq(&q->queue_lock);
@@ -946,6 +948,8 @@ void blkg_conf_finish(struct blkg_conf_ctx *ctx)
 {
 	spin_unlock_irq(&ctx->disk->queue->queue_lock);
 	rcu_read_unlock();
+	blk_mq_unquiesce_queue(ctx->disk->queue);
+	blk_mq_unfreeze_queue(ctx->disk->queue);
 	put_disk_and_module(ctx->disk);
 }
 
