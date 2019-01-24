@@ -15,6 +15,8 @@
 #include "blk-stat.h"
 #include "ordered-wq.h"
 
+#define TIMING 1
+
 static struct blkcg_policy blkcg_policy_ioweight;
 struct ioweight_grp;
 
@@ -78,6 +80,13 @@ struct ioweight_stat {
 	u64 end_ns;
 };
 
+struct child_time_info {
+	struct percpu_counter total_time;
+	u64 slots[TIME_SLOTS];
+	unsigned slot;
+	u64 last_total_time;
+};
+
 struct ioweight_grp {
 	struct blkg_policy_data pd;
 	struct blk_ioweight *blkioweight;
@@ -95,6 +104,12 @@ struct ioweight_grp {
 	u64 children_total_load;
 	u64 load;
 	u64 io_time;
+
+	struct percpu_counter total_time;
+	struct child_time_info info;
+	u64 slots[TIME_SLOTS];
+	unsigned slot;
+	u64 last_total_time;
 };
 
 struct coefficient {
@@ -264,12 +279,22 @@ static noinline void wait_global_counter(struct ioweight_grp *ioweight, u64 key)
 {
 	struct blk_ioweight *blkioweight = ioweight->blkioweight;
 	ordered_wait_queue_entry_t entry;
+	u64 last = atomic64_read(&blkioweight->iocounter);
+	u64 cur = 0;
+	bool slept = false;
 
-	key += atomic64_read(&blkioweight->iocounter);
+	key += last;
 	init_ordered_wait_queue_entry(&entry, current, key);
-	ordered_prepare_to_wait(&blkioweight->owq, &entry,
-				TASK_UNINTERRUPTIBLE);
-	io_schedule();
+	while (1) {
+		ordered_prepare_to_wait(&blkioweight->owq, &entry,
+					TASK_UNINTERRUPTIBLE);
+		cur = atomic64_read(&blkioweight->iocounter);
+		if ((slept && cur == last) || cur >= key)
+			break;
+		io_schedule_timeout(HZ);
+		last = cur;
+		slept = true;
+	}
 	ordered_finish_wait(&blkioweight->owq, &entry);
 }
 
@@ -341,6 +366,9 @@ static inline enum ioweight_bucket rq_to_bucket(struct request *rq)
 	return NR_BUCKETS;
 }
 
+#ifdef TIMING
+void blk_ioweight_stat_add(struct request *rq, u64 now) {}
+#else
 void blk_ioweight_stat_add(struct request *rq, u64 now)
 {
 	struct blkcg_gq *blkg;
@@ -371,12 +399,40 @@ void blk_ioweight_stat_add(struct request *rq, u64 now)
 		put_cpu_ptr(ioweight->stat);
 	}
 }
+#endif
+
+#ifdef TIMING
+static void ioweight_record_time(struct ioweight_grp *ioweight,
+				 struct bio_issue *issue, u64 now,
+				 bool issue_as_root)
+{
+	struct blkcg_gq *blkg = ioweight_to_blkg(ioweight);
+	u64 start = bio_issue_time(issue);
+	u64 req_time;
+
+	now = __bio_issue_time(now);
+	if (now <= start)
+		return;
+
+	req_time = now - start;
+	percpu_counter_add(&ioweight->total_time, req_time);
+	if (blkg->parent) {
+		struct ioweight_grp *parent = blkg_to_ioweight(blkg->parent);
+		if (parent)
+			percpu_counter_add(&parent->info.total_time, req_time);
+	}
+}
+#endif
 
 static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
 {
 	struct blkcg_gq *blkg;
 	struct rq_wait *rqw;
 	struct ioweight_grp *ioweight;
+#ifdef TIMING
+	u64 now = ktime_to_ns(ktime_get());
+	bool issue_as_root = bio_issue_as_root_blkg(bio);
+#endif
 
 	blkg = bio->bi_blkg;
 	if (!blkg || !bio_flagged(bio, BIO_TRACKED))
@@ -398,8 +454,12 @@ static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
 			continue;
 		}
 		rqw = &ioweight->rq_wait;
-
 		BUG_ON(atomic_dec_return(&rqw->inflight) < 0);
+#ifdef TIMING
+		if (ioweight->weight != 0)
+			ioweight_record_time(ioweight, &bio->bi_issue, now,
+					     issue_as_root);
+#endif
 		wake_up(&rqw->wait);
 		blkg = blkg->parent;
 	}
@@ -482,7 +542,7 @@ static struct rq_qos_ops blkcg_ioweight_ops = {
 };
 
 #define SCALE_DOWN_FACTOR 2
-#define SCALE_UP_FACTOR 4
+#define SCALE_UP_FACTOR 5
 
 static inline unsigned long scale_amount(unsigned long qd, bool up)
 {
@@ -516,21 +576,21 @@ static void scale_up(struct ioweight_grp *ioweight)
 	trace_printk("weight %llu scale up %lu\n", ioweight->weight, old);
 }
 
-static void scale_down(struct ioweight_grp *ioweight)
+static void scale_down(struct ioweight_grp *ioweight, u64 mult)
 {
 	unsigned long qd = ioweight->blkioweight->rqos.q->nr_requests;
 	unsigned long old = ioweight->rq_depth.max_depth;
-	unsigned long scale = scale_amount(qd, true);
+	unsigned long scale = scale_amount(qd, true) * mult;
 
 	if (old > qd)
 		old = qd;
 
 	if (old == 1) {
-		u64 io_charge = ioweight->io_charge + 1;
+		u64 io_charge = ioweight->io_charge + mult;
 		WRITE_ONCE(ioweight->io_charge, io_charge);
 		if (io_charge == 1)
 			blk_ioweight_inc_global_waiter(ioweight->blkioweight);
-		trace_printk("weight %llu add charge %llu\n", ioweight->weight,
+		trace_printk("%s weight %llu add charge %llu\n", ioweight->name, ioweight->weight,
 			     io_charge);
 		/*
 		blkcg_add_delay(ioweight_to_blkg(ioweight),
@@ -545,7 +605,7 @@ static void scale_down(struct ioweight_grp *ioweight)
 		old = 1;
 	else
 		old -= scale;
-	trace_printk("weight %llu scale down %lu\n", ioweight->weight, old);
+	trace_printk("%s weight %llu scale down %lu\n", ioweight->name, ioweight->weight, old);
 	WRITE_ONCE(ioweight->rq_depth.max_depth, old);
 }
 
@@ -558,6 +618,128 @@ static void scale_down(struct ioweight_grp *ioweight)
  */
 #define POW2_NSEC_PER_MSEC (1 << 20)
 
+#ifdef TIMING
+static void blkioweight_timer_fn(struct timer_list *t)
+{
+	struct blk_ioweight *blkioweight = from_timer(blkioweight, t, timer);
+	struct blkcg_gq *blkg;
+	struct cgroup_subsys_state *pos_css;
+	bool reset_io = false;
+	bool rearm = false;
+
+	if (atomic_read(&blkioweight->global_waiters)) {
+		u64 cur = atomic64_read(&blkioweight->iocounter);
+		if (blkioweight->last_io_count == cur)
+			reset_io = true;
+		blkioweight->last_io_count = cur;
+	}
+	rcu_read_lock();
+	blkg_for_each_descendant_pre(blkg, pos_css,
+				     blkioweight->rqos.q->root_blkg) {
+		struct ioweight_grp *ioweight, *parent;
+		u64 parent_total_time, total_weight;
+		u64 total_time, actual_share, weight_share;
+		u64 allowable = 0;
+
+		/*
+		 * We could be exiting, don't access the pd unless we have a
+		 * ref on the blkg.
+		 */
+		if (!blkg_tryget(blkg))
+			continue;
+
+		ioweight = blkg_to_ioweight(blkg);
+		if (!ioweight)
+			goto next;
+		/*
+		 * We need to sum up the childrens time as well as our own time.
+		 * We don't user our childrens time here, it's just calculated
+		 * so the children don't have to caculate it when we reach them.
+		 */
+		total_time = percpu_counter_sum_reset(&ioweight->info.total_time);
+		ioweight->info.last_total_time += total_time;
+		ioweight->info.last_total_time -= ioweight->info.slots[ioweight->info.slot];
+		ioweight->info.slots[ioweight->info.slot] = total_time;
+		if (++ioweight->info.slot >= TIME_SLOTS)
+			ioweight->info.slot = 0;
+
+		total_time = percpu_counter_sum_reset(&ioweight->total_time);
+		ioweight->last_total_time += total_time;
+		ioweight->last_total_time -= ioweight->slots[ioweight->slot];
+		ioweight->slots[ioweight->slot] = total_time;
+		if (++ioweight->slot >= TIME_SLOTS)
+			ioweight->slot = 0;
+
+		total_time = ioweight->last_total_time;
+		trace_printk("%s weight %llu, child_time %llu, last_time %llu, saturation %llu\n",
+			     ioweight->name,
+			     ioweight->weight, ioweight->info.last_total_time,
+			     ioweight->last_total_time, blkioweight->saturation);
+
+		/* We are the root, there's nothing more to do. */
+		if (!blkg->parent)
+			goto next;
+
+		/*
+		 * If we're holding a ref to the child then the parent is pinned
+		 * as well, so we're good.
+		 */
+		parent = blkg_to_ioweight(blkg->parent);
+		if (!parent)
+			goto next;
+
+		/*
+		 * We were the only group doing IO this go around, scale
+		 * ourselves up and carry on.
+		 */
+		if (total_time == parent->info.last_total_time) {
+			if (ioweight->io_charge) {
+				WRITE_ONCE(ioweight->io_charge, 0);
+				blk_ioweight_dec_global_waiter(blkioweight);
+				reset_io = true;
+			}
+			scale_up(ioweight);
+			goto next;
+		}
+
+		if (total_time)
+			rearm = true;
+
+		/*
+		 * actual_share is the percentage of time spent doing IO compard
+		 * to the overall time spent doing IO for all of the peers in
+		 * this group.
+		 *
+		 * weight_share is the percentage of share of this group
+		 * compared to the weight of all of its peers.
+		 */
+		parent_total_time = max_t(u64, 1, parent->info.last_total_time);
+		total_weight = max_t(u64, 1, atomic64_read(&parent->child_weight));
+		if (total_weight < ioweight->weight)
+			printk(KERN_ERR "WTF\n");
+		actual_share = div64_u64(total_time * 100, parent_total_time);
+		weight_share = div64_u64(ioweight->weight * 100, total_weight);
+
+		if (weight_share > 5)
+			allowable = 3;
+		trace_printk("%s weight %llu, total_time %llu, total_weight %llu, parent_total_time %llu, actual_share %llu, weight_share %llu\n", ioweight->name, ioweight->weight, total_time, total_weight, parent_total_time, actual_share, weight_share);
+		/* We used more than our fair share, scale down. */
+		if (actual_share - allowable > weight_share) {
+			u64 mult = max_t(u64, 1, div64_u64(actual_share, weight_share));
+			scale_down(ioweight, mult);
+		}
+		if (actual_share + allowable < weight_share)
+			scale_up(ioweight);
+next:
+		blkg_put(blkg);
+	}
+	rcu_read_unlock();
+	if (reset_io)
+		ordered_wake_up_all(&blkioweight->owq);
+	if (rearm && !timer_pending(&blkioweight->timer))
+		mod_timer(&blkioweight->timer, jiffies + HZ);
+}
+#else
 static void blkioweight_timer_fn(struct timer_list *t)
 {
 	struct blk_ioweight *blkioweight = from_timer(blkioweight, t, timer);
@@ -652,6 +834,7 @@ static void blkioweight_timer_fn(struct timer_list *t)
 	if (rearm && !timer_pending(&blkioweight->timer))
 		mod_timer(&blkioweight->timer, jiffies + HZ);
 }
+#endif
 
 int blk_ioweight_init(struct request_queue *q)
 {
@@ -807,7 +990,26 @@ static size_t ioweight_pd_stat(struct blkg_policy_data *pd, char *buf,
 	return scnprintf(buf, size, " depth=%u", ioweight->rq_depth.max_depth);
 }
 
+#ifdef TIMING
+static struct blkg_policy_data *ioweight_pd_alloc(gfp_t gfp, int node)
+{
+	struct ioweight_grp *ioweight;
 
+	ioweight = kzalloc_node(sizeof(*ioweight), gfp, node);
+	if (!ioweight)
+		return NULL;
+	if (percpu_counter_init(&ioweight->total_time, 0, gfp)) {
+		kfree(ioweight);
+		return NULL;
+	}
+	if (percpu_counter_init(&ioweight->info.total_time, 0, gfp)) {
+		percpu_counter_destroy(&ioweight->total_time);
+		kfree(ioweight);
+		return NULL;
+	}
+	return &ioweight->pd;
+}
+#else
 static struct blkg_policy_data *ioweight_pd_alloc(gfp_t gfp, int node)
 {
 	struct ioweight_grp *ioweight;
@@ -836,6 +1038,7 @@ static struct blkg_policy_data *ioweight_pd_alloc(gfp_t gfp, int node)
 	}
 	return &ioweight->pd;
 }
+#endif
 
 static void ioweight_pd_init(struct blkg_policy_data *pd)
 {
