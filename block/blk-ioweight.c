@@ -560,6 +560,7 @@ static void scale_up(struct ioweight_grp *ioweight)
 
 	if (old == 1 && io_charge) {
 		io_charge--;
+		trace_printk("weight %llu scale up charge %llu\n", ioweight->weight, io_charge);
 		WRITE_ONCE(ioweight->io_charge, io_charge);
 		if (io_charge == 0)
 			blk_ioweight_dec_global_waiter(ioweight->blkioweight);
@@ -697,6 +698,9 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		update_times(&ioweight->info);
 		update_times(&ioweight->child_info);
 
+		if (!ioweight->weight)
+			goto next;
+
 		/* We are the root, there's nothing more to do. */
 		if (!blkg->parent)
 			goto next;
@@ -713,8 +717,8 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		 * We were the only group doing IO this go around, scale
 		 * ourselves up and carry on.
 		 */
-		if (ioweight->info.total_1sec ==
-		    parent->child_info.total_1sec) {
+		if (ioweight->info.total_5sec ==
+		    parent->child_info.total_5sec) {
 			if (ioweight->io_charge) {
 				WRITE_ONCE(ioweight->io_charge, 0);
 				blk_ioweight_dec_global_waiter(blkioweight);
@@ -731,6 +735,12 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		if (weight_share > 5)
 			allowable = 3;
 
+		trace_printk("%s 1sec total %llu 5sec total %llu 10sec total %llu\n",
+			     ioweight->name, ioweight->info.total_1sec, ioweight->info.total_5sec,
+			     ioweight->info.total_10sec);
+		trace_printk("parent 1sec total %llu 5sec total %llu 10sec total %llu\n",
+			     parent->child_info.total_1sec, parent->child_info.total_5sec,
+			     parent->child_info.total_10sec);
 		trace_printk("%s 1sec share %llu 5sec share %llu 10sec share %llu weight %llu\n",
 			     ioweight->name, share.share_1sec, share.share_5sec,
 			     share.share_10sec, ioweight->weight);
@@ -740,38 +750,61 @@ static void blkioweight_timer_fn(struct timer_list *t)
 			goto next;
 		}
 
+		if (share.share_1sec > weight_share) {
+			int scale = 1;
+			if (share.share_5sec > weight_share)
+				scale++;
+			else if (share.share_5sec < weight_share)
+				scale--;
+			if (share.share_10sec > weight_share)
+				scale++;
+			else if (share.share_10sec < weight_share)
+				scale--;
+			if (scale > 0)
+				scale_down(ioweight, scale);
+		} else if (share.share_1sec < weight_share) {
+			int scale = 1;
+			if (share.share_5sec > weight_share)
+				scale--;
+			else if (share.share_5sec < weight_share)
+				scale++;
+			if (share.share_10sec > weight_share)
+				scale--;
+			else if (share.share_10sec < weight_share)
+				scale++;
+			if (scale > 0)
+				scale_up(ioweight);
+		}
+#if 0
 		/*
 		 * If it's been 10 seconds, check our 10 second average and
 		 * scale accordingly.
 		 */
-		if (ioweight->info.total_10sec != ioweight->info.total_1sec) {
-			if (!(ioweight->info.slot % 10)) {
-				if (share.share_10sec < weight_share)
-					scale_up(ioweight);
-				else if (share.share_10sec > weight_share)
-					scale_down(ioweight, 1);
-			}
+		if (share.share_10sec < weight_share)
+			scale_up(ioweight);
+		else if (share.share_10sec > weight_share) {
+//			u64 mult = max_t(u64, 1, div64_u64(share.share_10sec, weight_share));
+			scale_down(ioweight, 1);
 		}
 
 		/*
 		 * If it's been 5 seconds, check our 5 second average, and scale
 		 * accordingly.
 		 */
-		if (ioweight->info.total_5sec != ioweight->info.total_1sec) {
-			if (!(ioweight->info.slot % 5)) {
-				if (share.share_5sec < weight_share)
-					scale_up(ioweight);
-				else if (share.share_5sec > weight_share)
-					scale_down(ioweight, 1);
-			}
+		if (share.share_5sec < weight_share)
+			scale_up(ioweight);
+		else if (share.share_5sec > weight_share) {
+//			u64 mult = max_t(u64, 1, div64_u64(share.share_5sec, weight_share));
+			scale_down(ioweight, 1);
 		}
 
-		/* Scale according to our most recent information. */
+		/* Scale according to our most recent information.
 		if (share.share_1sec - allowable > weight_share)
 			scale_down(ioweight, 1);
 		else if (share.share_1sec + allowable < weight_share)
 			scale_up(ioweight);
-
+		*/
+#endif
 next:
 		blkg_put(blkg);
 	}
