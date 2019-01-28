@@ -402,14 +402,12 @@ void blk_ioweight_stat_add(struct request *rq, u64 now)
 
 #ifdef TIMING
 static void ioweight_record_time(struct ioweight_grp *ioweight,
-				 struct bio_issue *issue, u64 now,
+				 u64 start, u64 now,
 				 bool issue_as_root)
 {
 	struct blkcg_gq *blkg = ioweight_to_blkg(ioweight);
-	u64 start = bio_issue_time(issue);
 	u64 req_time;
 
-	now = __bio_issue_time(now);
 	if (now <= start)
 		return;
 
@@ -423,21 +421,21 @@ static void ioweight_record_time(struct ioweight_grp *ioweight,
 }
 #endif
 
-static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
+static void blkcg_ioweight_done(struct rq_qos *rqos, struct request *rq)
 {
 	struct blkcg_gq *blkg;
 	struct rq_wait *rqw;
 	struct ioweight_grp *ioweight;
 #ifdef TIMING
 	u64 now = ktime_to_ns(ktime_get());
-	bool issue_as_root = bio_issue_as_root_blkg(bio);
+	bool issue_as_root = (rq->cmd_flags & (REQ_META | REQ_SWAP)) != 0;
 #endif
 
-	blkg = bio->bi_blkg;
-	if (!blkg || !bio_flagged(bio, BIO_TRACKED))
+	blkg = rq->blkg;
+	if (!blkg)
 		return;
 
-	ioweight = blkg_to_ioweight(bio->bi_blkg);
+	ioweight = blkg_to_ioweight(blkg);
 	if (!ioweight)
 		return;
 
@@ -456,7 +454,7 @@ static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
 		BUG_ON(atomic_dec_return(&rqw->inflight) < 0);
 #ifdef TIMING
 		if (ioweight->weight != 0)
-			ioweight_record_time(ioweight, &bio->bi_issue, now,
+			ioweight_record_time(ioweight, rq->io_start_time_ns, now,
 					     issue_as_root);
 #endif
 		wake_up(&rqw->wait);
@@ -496,7 +494,7 @@ static void blkcg_ioweight_exit(struct rq_qos *rqos)
 
 static void blkcg_ioweight_track(struct rq_qos *rqos, struct request *rq, struct bio *bio)
 {
-	bio_issue_init(&bio->bi_issue, bio_sectors(bio));
+//	bio_issue_init(&bio->bi_issue, bio_sectors(bio));
 }
 
 static int ioweight_inflight_show(void *data, struct seq_file *m)
@@ -535,7 +533,7 @@ static struct rq_qos_ops blkcg_ioweight_ops = {
 	.throttle = blkcg_ioweight_throttle,
 	.track = blkcg_ioweight_track,
 	.cleanup = blkcg_ioweight_cleanup,
-	.done_bio = blkcg_ioweight_done_bio,
+	.done = blkcg_ioweight_done,
 	.exit = blkcg_ioweight_exit,
 	.debugfs_attrs = ioweight_debugfs_attrs,
 };
@@ -658,6 +656,13 @@ static inline void calculate_shares(struct child_time_info *parent,
 	share->share_10sec = calc_share(parent->total_10sec, info->total_10sec);
 }
 
+static inline u64 safe_div(u64 numerator, u64 denominator)
+{
+	numerator = max_t(u64, 1, numerator);
+	denominator = max_t(u64, 1, denominator);
+	return div64_u64(numerator, denominator);
+}
+
 static void blkioweight_timer_fn(struct timer_list *t)
 {
 	struct blk_ioweight *blkioweight = from_timer(blkioweight, t, timer);
@@ -751,15 +756,15 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		}
 
 		if (share.share_1sec > weight_share) {
-			int scale = 1;
+			int scale = max_t(int, 1, safe_div(share.share_1sec, weight_share));
 			if (share.share_5sec > weight_share)
-				scale++;
+				scale += max_t(int, 1, safe_div(share.share_5sec, weight_share));
 			else if (share.share_5sec < weight_share)
-				scale--;
+				scale -= max_t(int, 1, safe_div(weight_share, share.share_5sec));
 			if (share.share_10sec > weight_share)
-				scale++;
+				scale += max_t(int, 1, safe_div(share.share_10sec, weight_share));
 			else if (share.share_10sec < weight_share)
-				scale--;
+				scale -= max_t(int, 1, safe_div(weight_share, share.share_10sec));
 			if (scale > 0)
 				scale_down(ioweight, scale);
 		} else if (share.share_1sec < weight_share) {
