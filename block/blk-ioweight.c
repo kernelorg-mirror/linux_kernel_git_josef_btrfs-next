@@ -89,6 +89,12 @@ struct child_time_info {
 	u64 total_10sec;
 };
 
+struct child_history {
+	u64 last_1sec;
+	u64 last_5sec;
+	u64 last_10sec;
+};
+
 struct ioweight_grp {
 	struct blkg_policy_data pd;
 	struct blk_ioweight *blkioweight;
@@ -109,6 +115,10 @@ struct ioweight_grp {
 
 	struct child_time_info info;
 	struct child_time_info child_info;
+	struct child_history history;
+	int scale;
+	int stable;
+	int wait_for_stable;
 };
 
 struct coefficient {
@@ -332,23 +342,21 @@ static void blkcg_ioweight_throttle(struct rq_qos *rqos, struct bio *bio)
 	struct blk_ioweight *blkioweight = BLKIOWEIGHT(rqos);
 	struct blkcg_gq *blkg = bio->bi_blkg;
 	bool issue_as_root = bio_issue_as_root_blkg(bio);
+	bool arm = false;
 
 	if (!blk_ioweight_enabled(blkioweight))
 		return;
 
-
-	while (blkg && blkg->parent) {
+	for (; blkg; blkg = blkg->parent) {
 		struct ioweight_grp *ioweight = blkg_to_ioweight(blkg);
-		if (!ioweight) {
-			blkg = blkg->parent;
+		if (!ioweight)
 			continue;
-		}
 
+		arm = true;
 		__blkcg_ioweight_throttle(rqos, ioweight, issue_as_root,
 				     (bio->bi_opf & REQ_SWAP) == REQ_SWAP);
-		blkg = blkg->parent;
 	}
-	if (!timer_pending(&blkioweight->timer))
+	if (arm && !timer_pending(&blkioweight->timer))
 		mod_timer(&blkioweight->timer, jiffies + HZ);
 }
 
@@ -558,7 +566,7 @@ static void scale_up(struct ioweight_grp *ioweight)
 
 	if (old == 1 && io_charge) {
 		io_charge--;
-		trace_printk("weight %llu scale up charge %llu\n", ioweight->weight, io_charge);
+		trace_printk("%s weight %llu scale up charge %llu\n", ioweight->name, ioweight->weight, io_charge);
 		WRITE_ONCE(ioweight->io_charge, io_charge);
 		if (io_charge == 0)
 			blk_ioweight_dec_global_waiter(ioweight->blkioweight);
@@ -571,7 +579,7 @@ static void scale_up(struct ioweight_grp *ioweight)
 		wake_up_all(&ioweight->rq_wait.wait);
 	}
 
-	trace_printk("weight %llu scale up %lu\n", ioweight->weight, old);
+	trace_printk("%s weight %llu scale up %lu\n", ioweight->name, ioweight->weight, old);
 }
 
 static void scale_down(struct ioweight_grp *ioweight, u64 mult)
@@ -624,10 +632,19 @@ struct running_share {
 	u64 share_10sec;
 };
 
-static inline void update_times(struct child_time_info *info)
+static inline void update_times(struct child_time_info *info,
+				struct child_history *history)
 {
 	u64 total_time = percpu_counter_sum_reset(&info->total_time);
 	unsigned slot_5sec = (info->slot + 5) % 10;
+
+	if (history) {
+		history->last_1sec = info->total_1sec;
+		if (!(info->slot % 5))
+			history->last_5sec = info->total_5sec;
+		if (!(info->slot % 10))
+			history->last_10sec = info->total_10sec;
+	}
 
 	info->total_10sec += total_time;
 	info->total_5sec += total_time;
@@ -663,6 +680,43 @@ static inline u64 safe_div(u64 numerator, u64 denominator)
 	return div64_u64(numerator, denominator);
 }
 
+/*
+ * |val1 - val2| / ((val1 + val2) / 2) * 100
+ */
+static inline u64 pct_diff(u64 val1, u64 val2)
+{
+	u64 abs;
+	if (val1 < val2)
+		abs = val2 - val1;
+	else
+		abs = val1 - val2;
+	val1 += val2;
+	val1 >>= 1;
+	abs *= 100;
+	return safe_div(abs, val1);
+}
+
+static inline int check_stable(struct ioweight_grp *ioweight)
+{
+	u64 diff;
+	diff = pct_diff(ioweight->history.last_5sec,
+			ioweight->child_info.total_5sec);
+	if (diff > 5) {
+		trace_printk("%s last5sec %llu, total5sec %llu, diff %llu\n",
+			     ioweight->name, ioweight->history.last_5sec,
+			     ioweight->child_info.total_5sec, diff);
+		return 0;
+	}
+	diff = pct_diff(ioweight->history.last_10sec,
+			ioweight->child_info.total_10sec);
+	if (diff > 5) {
+		trace_printk("%s last10sec %llu, total10sec %llu, diff %llu\n",
+			     ioweight->name, ioweight->history.last_10sec,
+			     ioweight->child_info.total_10sec, diff);
+	}
+	return (diff > 5) ? 0 : 1;
+}
+
 static void blkioweight_timer_fn(struct timer_list *t)
 {
 	struct blk_ioweight *blkioweight = from_timer(blkioweight, t, timer);
@@ -684,6 +738,7 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		struct running_share share;
 		u64 weight_share;
 		u64 allowable = 0;
+		int scale = 0;
 
 		/*
 		 * We could be exiting, don't access the pd unless we have a
@@ -700,8 +755,9 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		 * We don't user our childrens time here, it's just calculated
 		 * so the children don't have to caculate it when we reach them.
 		 */
-		update_times(&ioweight->info);
-		update_times(&ioweight->child_info);
+		update_times(&ioweight->info, NULL);
+		update_times(&ioweight->child_info, &ioweight->history);
+		ioweight->stable = check_stable(ioweight);
 
 		if (!ioweight->weight)
 			goto next;
@@ -730,9 +786,36 @@ static void blkioweight_timer_fn(struct timer_list *t)
 				reset_io = true;
 			}
 			scale_up(ioweight);
+			ioweight->scale = 1;
 			goto next;
 		}
 
+		if (parent->stable)
+			goto check_shares;
+
+		if (ioweight->wait_for_stable)
+			goto next;
+
+		/*
+		 * We scaled down last time, we need to see if the overall usage
+		 * went down.
+		 */
+		if (ioweight->scale < 0 &&
+		    parent->child_info.total_5sec <
+		    parent->history.last_5sec) {
+			u64 diff = pct_diff(parent->child_info.total_5sec,
+					    parent->history.last_5sec);
+			if (diff >= 5) {
+				trace_printk("%s needs to wait for stable\n",
+					     ioweight->name);
+				ioweight->wait_for_stable = 1;
+				scale_up(ioweight);
+				ioweight->scale = 0;
+				goto next;
+			}
+		}
+check_shares:
+		ioweight->wait_for_stable = 0;
 		calculate_shares(&parent->child_info, &ioweight->info, &share);
 		weight_share = calc_share(atomic64_read(&parent->child_weight),
 					  ioweight->weight);
@@ -752,11 +835,12 @@ static void blkioweight_timer_fn(struct timer_list *t)
 
 		if (share.share_1sec == 0) {
 			scale_up(ioweight);
+			ioweight->scale = 1;
 			goto next;
 		}
 
 		if (share.share_1sec > weight_share) {
-			int scale = max_t(int, 1, safe_div(share.share_1sec, weight_share));
+			scale = max_t(int, 1, safe_div(share.share_1sec, weight_share));
 			if (share.share_5sec > weight_share)
 				scale += max_t(int, 1, safe_div(share.share_5sec, weight_share));
 			else if (share.share_5sec < weight_share)
@@ -765,10 +849,14 @@ static void blkioweight_timer_fn(struct timer_list *t)
 				scale += max_t(int, 1, safe_div(share.share_10sec, weight_share));
 			else if (share.share_10sec < weight_share)
 				scale -= max_t(int, 1, safe_div(weight_share, share.share_10sec));
-			if (scale > 0)
+			if (scale > 0) {
 				scale_down(ioweight, scale);
+				scale = -scale;
+			} else if (scale < 0) {
+				scale = 0;
+			}
 		} else if (share.share_1sec < weight_share) {
-			int scale = 1;
+			scale = 1;
 			if (share.share_5sec > weight_share)
 				scale--;
 			else if (share.share_5sec < weight_share)
@@ -779,7 +867,10 @@ static void blkioweight_timer_fn(struct timer_list *t)
 				scale++;
 			if (scale > 0)
 				scale_up(ioweight);
+			else if (scale < 0)
+				scale = 0;
 		}
+		ioweight->scale = scale;
 #if 0
 		/*
 		 * If it's been 10 seconds, check our 10 second average and
