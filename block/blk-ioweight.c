@@ -717,6 +717,27 @@ static inline int check_stable(struct ioweight_grp *ioweight)
 	return (diff > 5) ? 0 : 1;
 }
 
+static inline int scale_mod(u64 actual_share, u64 weight_share)
+{
+	int diff;
+	int scale;
+	if (actual_share > weight_share) {
+		diff = actual_share - weight_share;
+		scale = safe_div(actual_share, weight_share);
+	} else {
+		diff = weight_share - actual_share;
+		scale = safe_div(weight_share, actual_share);
+	}
+	if (diff < 5)
+		return 0;
+	if (diff > 10)
+		diff /= 10;
+	else
+		diff = 1;
+	diff = max_t(int, diff, scale);
+	return (actual_share > weight_share) ? -diff : diff;
+}
+
 static void blkioweight_timer_fn(struct timer_list *t)
 {
 	struct blk_ioweight *blkioweight = from_timer(blkioweight, t, timer);
@@ -839,37 +860,13 @@ check_shares:
 			goto next;
 		}
 
-		if (share.share_1sec > weight_share) {
-			scale = max_t(int, 1, safe_div(share.share_1sec, weight_share));
-			if (share.share_5sec > weight_share)
-				scale += max_t(int, 1, safe_div(share.share_5sec, weight_share));
-			else if (share.share_5sec < weight_share)
-				scale -= max_t(int, 1, safe_div(weight_share, share.share_5sec));
-			if (share.share_10sec > weight_share)
-				scale += max_t(int, 1, safe_div(share.share_10sec, weight_share));
-			else if (share.share_10sec < weight_share)
-				scale -= max_t(int, 1, safe_div(weight_share, share.share_10sec));
-			if (scale > 0) {
-				scale_down(ioweight, scale);
-				scale = -scale;
-			} else if (scale < 0) {
-				scale = 0;
-			}
-		} else if (share.share_1sec < weight_share) {
-			scale = 1;
-			if (share.share_5sec > weight_share)
-				scale--;
-			else if (share.share_5sec < weight_share)
-				scale++;
-			if (share.share_10sec > weight_share)
-				scale--;
-			else if (share.share_10sec < weight_share)
-				scale++;
-			if (scale > 0)
-				scale_up(ioweight);
-			else if (scale < 0)
-				scale = 0;
-		}
+		scale = scale_mod(share.share_1sec, weight_share);
+		scale += scale_mod(share.share_5sec, weight_share);
+		scale += scale_mod(share.share_10sec, weight_share);
+		if (scale < 0)
+			scale_down(ioweight, -scale);
+		else if (scale > 0)
+			scale_up(ioweight);
 		ioweight->scale = scale;
 #if 0
 		/*
