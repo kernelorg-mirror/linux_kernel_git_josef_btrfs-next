@@ -27,6 +27,8 @@ struct blk_ioweight {
 	u64 last_io_count;
 	atomic_t global_waiters;
 	struct timer_list timer;
+	u64 latency_threshold;
+	unsigned long missed_threshold;
 };
 
 static inline struct blk_ioweight *BLKIOWEIGHT(struct rq_qos *rqos)
@@ -378,6 +380,7 @@ static void ioweight_record_time(struct ioweight_grp *ioweight,
 				 bool issue_as_root)
 {
 	struct blkcg_gq *blkg = ioweight_to_blkg(ioweight);
+	struct blk_ioweight *blkioweight = ioweight->blkioweight;
 	u64 req_time;
 
 	if (now <= start)
@@ -385,6 +388,8 @@ static void ioweight_record_time(struct ioweight_grp *ioweight,
 
 	req_time = now - start;
 	percpu_counter_add(&ioweight->info.total_time, req_time);
+	if (req_time > blkioweight->latency_threshold)
+		WRITE_ONCE(blkioweight->missed_threshold, 1);
 	if (blkg->parent) {
 		struct ioweight_grp *parent = blkg_to_ioweight(blkg->parent);
 		if (parent)
@@ -703,6 +708,7 @@ static void blkioweight_timer_fn(struct timer_list *t)
 	struct cgroup_subsys_state *pos_css;
 	bool reset_io = false;
 	bool rearm = false;
+	bool saturated;
 
 	if (atomic_read(&blkioweight->global_waiters)) {
 		u64 cur = atomic64_read(&blkioweight->iocounter);
@@ -710,6 +716,10 @@ static void blkioweight_timer_fn(struct timer_list *t)
 			reset_io = true;
 		blkioweight->last_io_count = cur;
 	}
+
+	saturated = READ_ONCE(blkioweight->missed_threshold) == 1;
+	WRITE_ONCE(blkioweight->missed_threshold, 0);
+
 	rcu_read_lock();
 	blkg_for_each_descendant_pre(blkg, pos_css,
 				     blkioweight->rqos.q->root_blkg) {
@@ -736,7 +746,7 @@ static void blkioweight_timer_fn(struct timer_list *t)
 		 */
 		update_times(&ioweight->info, NULL);
 		update_times(&ioweight->child_info, &ioweight->history);
-		ioweight->stable = check_stable(ioweight);
+//		ioweight->stable = check_stable(ioweight);
 
 		if (!ioweight->weight)
 			goto next;
@@ -769,16 +779,19 @@ static void blkioweight_timer_fn(struct timer_list *t)
 			goto next;
 		}
 
+/*
 		if (parent->stable)
 			goto check_shares;
 
 		if (ioweight->wait_for_stable)
 			goto next;
+*/
+
 
 		/*
 		 * We scaled down last time, we need to see if the overall usage
 		 * went down.
-		 */
+		 *
 		if (ioweight->scale < 0 &&
 		    parent->child_info.total_5sec <
 		    parent->history.last_5sec) {
@@ -792,6 +805,13 @@ static void blkioweight_timer_fn(struct timer_list *t)
 				ioweight->scale = 0;
 				goto next;
 			}
+		}
+		*/
+
+		/* We weren't saturated, scale ourselves up if we can. */
+		if (!saturated) {
+			scale_up(ioweight);
+			goto next;
 		}
 check_shares:
 		ioweight->wait_for_stable = 0;
@@ -908,7 +928,7 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 	struct ioweight_grp *ioweight;
 	struct blk_ioweight *blkioweight;
 	char *p, *tok, *name = NULL;
-	u64 weight = 0;
+	u64 weight = 0, thresh = 0;
 	u64 oldval;
 	int ret;
 
@@ -923,6 +943,11 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 		kfree(name);
 		return ret;
 	}
+
+	if (blk_queue_nonrot(ctx.disk->queue))
+		thresh = 2000000ULL;
+	else
+		thresh = 75000000ULL;
 
 	ioweight = blkg_to_ioweight(ctx.blkg);
 	if (!ioweight) {
@@ -940,7 +965,14 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 		if (sscanf(tok, "%15[^=]=%20s", key, val) != 2)
 			goto out;
 
-		if (!strcmp(key, "weight")) {
+		if (!strcmp(key, "threshold")) {
+			u64 v;
+
+			if (sscanf(val, "%llu", &v) == 1)
+				thresh = v;
+			else
+				goto out;
+		} else if (!strcmp(key, "weight")) {
 			u64 v;
 
 			if (sscanf(val, "%llu", &v) == 1)
@@ -972,6 +1004,8 @@ static ssize_t ioweight_set_limit(struct kernfs_open_file *of, char *buf,
 		blk_ioweight_dec_global_waiter(blkioweight);
 	}
 
+	if (thresh)
+		blkioweight->latency_threshold = thresh;
 	WRITE_ONCE(ioweight->rq_depth.max_depth, UINT_MAX);
 	wake_up_all(&ioweight->rq_wait.wait);
 	if (oldval && !weight)
@@ -992,12 +1026,15 @@ static u64 ioweight_prfill_limit(struct seq_file *sf,
 				  struct blkg_policy_data *pd, int off)
 {
 	struct ioweight_grp *ioweight = pd_to_ioweight(pd);
+	struct blk_ioweight *blkioweight;
 	const char *dname = blkg_dev_name(pd->blkg);
 
 	if (!dname || !ioweight->weight)
 		return 0;
-	seq_printf(sf, "%s weight=%llu\n",
-		   dname, (unsigned long long)ioweight->weight);
+	blkioweight = ioweight->blkioweight;
+	seq_printf(sf, "%s weight=%llu threshold=%llu\n",
+		   dname, (unsigned long long)ioweight->weight,
+		   (unsigned long long)blkioweight->latency_threshold);
 	return 0;
 }
 
