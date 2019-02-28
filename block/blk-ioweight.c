@@ -405,6 +405,9 @@ static void blkcg_ioweight_done(struct rq_qos *rqos, struct request *rq)
 	u64 now = ktime_to_ns(ktime_get());
 	bool issue_as_root = (rq->cmd_flags & (REQ_META | REQ_SWAP)) != 0;
 
+	if (rq->cmd_flags & REQ_OP_FLUSH && !rq->bio)
+		return;
+
 	blkg = rq->blkg;
 	if (!blkg)
 		return;
