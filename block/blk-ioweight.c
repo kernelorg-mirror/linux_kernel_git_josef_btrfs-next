@@ -400,16 +400,42 @@ static void ioweight_record_time(struct ioweight_grp *ioweight,
 static void blkcg_ioweight_done(struct rq_qos *rqos, struct request *rq)
 {
 	struct blkcg_gq *blkg;
-	struct rq_wait *rqw;
 	struct ioweight_grp *ioweight;
 	u64 now = ktime_to_ns(ktime_get());
 	bool issue_as_root = (rq->cmd_flags & (REQ_META | REQ_SWAP)) != 0;
 
-	if (rq->cmd_flags & REQ_OP_FLUSH && !rq->bio)
-		return;
-
 	blkg = rq->blkg;
 	if (!blkg)
+		return;
+
+	ioweight = blkg_to_ioweight(blkg);
+	if (!ioweight)
+		return;
+
+	if (!blk_ioweight_enabled(ioweight->blkioweight))
+		return;
+
+	while (blkg && blkg->parent) {
+		ioweight = blkg_to_ioweight(blkg);
+		if (!ioweight) {
+			blkg = blkg->parent;
+			continue;
+		}
+		if (ioweight->weight != 0)
+			ioweight_record_time(ioweight, rq->io_start_time_ns, now,
+					     issue_as_root);
+		blkg = blkg->parent;
+	}
+}
+
+static void blkcg_ioweight_done_bio(struct rq_qos *rqos, struct bio *bio)
+{
+	struct blkcg_gq *blkg;
+	struct rq_wait *rqw;
+	struct ioweight_grp *ioweight;
+
+	blkg = bio->bi_blkg;
+	if (!blkg || !bio_flagged(bio, BIO_TRACKED))
 		return;
 
 	ioweight = blkg_to_ioweight(blkg);
@@ -429,9 +455,6 @@ static void blkcg_ioweight_done(struct rq_qos *rqos, struct request *rq)
 		}
 		rqw = &ioweight->rq_wait;
 		BUG_ON(atomic_dec_return(&rqw->inflight) < 0);
-		if (ioweight->weight != 0)
-			ioweight_record_time(ioweight, rq->io_start_time_ns, now,
-					     issue_as_root);
 		wake_up(&rqw->wait);
 		blkg = blkg->parent;
 	}
@@ -509,6 +532,7 @@ static struct rq_qos_ops blkcg_ioweight_ops = {
 	.track = blkcg_ioweight_track,
 	.cleanup = blkcg_ioweight_cleanup,
 	.done = blkcg_ioweight_done,
+	.done_bio = blkcg_ioweight_done_bio,
 	.exit = blkcg_ioweight_exit,
 	.debugfs_attrs = ioweight_debugfs_attrs,
 };
@@ -816,7 +840,7 @@ static void blkioweight_timer_fn(struct timer_list *t)
 			scale_up(ioweight);
 			goto next;
 		}
-check_shares:
+
 		ioweight->wait_for_stable = 0;
 		calculate_shares(&parent->child_info, &ioweight->info, &share);
 		weight_share = calc_share(atomic64_read(&parent->child_weight),
