@@ -4009,6 +4009,28 @@ skip_backref:
 		ret = 0;
 	else if (ret)
 		btrfs_abort_transaction(trans, ret);
+
+	/*
+	 * If we have a pending delayed iput we could end up with the final iput
+	 * being run in btrfs-cleaner context.  If we have enough of these built
+	 * up we can end up burning a lot of time in btrfs-cleaner without any
+	 * way to throttle the unlinks.  Since we're currently holding a ref on
+	 * the inode we can run the delayed iput here without any issues as the
+	 * final iput won't be done until after we drop the ref we're currently
+	 * holding.
+	 */
+	if (!list_empty(&inode->delayed_iput)) {
+		spin_lock(&fs_info->delayed_iput_lock);
+		if (!list_empty(&inode->delayed_iput)) {
+			list_del_init(&inode->delayed_iput);
+			spin_unlock(&fs_info->delayed_iput_lock);
+			iput(&inode->vfs_inode);
+			if (atomic_dec_and_test(&fs_info->nr_delayed_iputs))
+				wake_up(&fs_info->delayed_iputs_wait);
+		} else {
+			spin_unlock(&fs_info->delayed_iput_lock);
+		}
+	}
 err:
 	btrfs_free_path(path);
 	if (ret)
