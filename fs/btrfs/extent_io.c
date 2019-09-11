@@ -136,32 +136,30 @@ static int __must_check flush_write_bio(struct extent_page_data *epd)
 
 int __init extent_io_init(void)
 {
+	if (bioset_init(&btrfs_bioset, BIO_POOL_SIZE,
+			offsetof(struct btrfs_io_bio, bio),
+			BIOSET_NEED_BVECS))
+		return -ENOMEM;
+
+	if (bioset_integrity_create(&btrfs_bioset, BIO_POOL_SIZE)) {
+		bioset_exit(&btrfs_bioset);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+int __init extent_buffer_init(void)
+{
 	extent_buffer_cache = kmem_cache_create("btrfs_extent_buffer",
 			sizeof(struct extent_buffer), 0,
 			SLAB_MEM_SPREAD, NULL);
 	if (!extent_buffer_cache)
 		return -ENOMEM;
-
-	if (bioset_init(&btrfs_bioset, BIO_POOL_SIZE,
-			offsetof(struct btrfs_io_bio, bio),
-			BIOSET_NEED_BVECS))
-		goto free_buffer_cache;
-
-	if (bioset_integrity_create(&btrfs_bioset, BIO_POOL_SIZE))
-		goto free_bioset;
-
 	return 0;
-
-free_bioset:
-	bioset_exit(&btrfs_bioset);
-
-free_buffer_cache:
-	kmem_cache_destroy(extent_buffer_cache);
-	extent_buffer_cache = NULL;
-	return -ENOMEM;
 }
 
-void __cold extent_io_exit(void)
+void __cold extent_buffer_exit(void)
 {
 	btrfs_extent_buffer_leak_debug_check();
 
@@ -171,6 +169,10 @@ void __cold extent_io_exit(void)
 	 */
 	rcu_barrier();
 	kmem_cache_destroy(extent_buffer_cache);
+}
+
+void __cold extent_io_exit(void)
+{
 	bioset_exit(&btrfs_bioset);
 }
 

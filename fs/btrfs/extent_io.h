@@ -332,4 +332,6 @@ bool find_lock_delalloc_range(struct inode *inode,
 #endif
 struct extent_buffer *alloc_test_extent_buffer(struct btrfs_fs_info *fs_info,
 					       u64 start);
+int __init extent_buffer_init(void);
+void __cold extent_buffer_exit(void);
 #endif
