@@ -5,6 +5,7 @@
 
 struct extent_changeset;
 struct io_failure_record;
+struct btrfs_inode;
 
 /* Bits for the extent state */
 #define EXTENT_DIRTY		(1U << 0)
