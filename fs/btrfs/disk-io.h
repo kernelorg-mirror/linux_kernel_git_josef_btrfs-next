@@ -6,6 +6,8 @@
 #ifndef BTRFS_DISK_IO_H
 #define BTRFS_DISK_IO_H
 
+#include "extent_io.h"
+
 #define BTRFS_SUPER_INFO_OFFSET SZ_64K
 #define BTRFS_SUPER_INFO_SIZE 4096
 
