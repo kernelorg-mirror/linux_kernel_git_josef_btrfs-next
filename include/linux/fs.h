@@ -863,7 +863,7 @@ static inline loff_t i_size_read(const struct inode *inode)
 	preempt_enable();
 	return i_size;
 #else
-	return inode->i_size;
+	return READ_ONCE(inode->i_size);
 #endif
 }
 
@@ -885,7 +885,7 @@ static inline void i_size_write(struct inode *inode, loff_t i_size)
 	inode->i_size = i_size;
 	preempt_enable();
 #else
-	inode->i_size = i_size;
+	WRITE_ONCE(inode->i_size, i_size);
 #endif
 }
 
