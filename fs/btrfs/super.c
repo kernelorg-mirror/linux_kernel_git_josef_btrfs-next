@@ -1101,10 +1101,6 @@ static char *get_subvol_name_from_objectid(struct btrfs_fs_info *fs_info,
 			ret = PTR_ERR(fs_root);
 			goto err;
 		}
-		if (!btrfs_grab_fs_root(fs_root)) {
-			ret = -ENOENT;
-			goto err;
-		}
 
 		/*
 		 * Walk up the filesystem tree by inode refs until we hit the
