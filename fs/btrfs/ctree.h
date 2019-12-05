@@ -950,6 +950,9 @@ struct btrfs_fs_info {
 	struct kobject *debug_kobj;
 	struct kobject *discard_debug_kobj;
 	struct list_head alloced_roots;
+
+	spinlock_t eb_leak_lock;
+	struct list_head alloced_ebs;
 #endif
 };
 
