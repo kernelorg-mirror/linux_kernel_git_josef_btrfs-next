@@ -3884,7 +3884,14 @@ int btrfs_balance(struct btrfs_fs_info *fs_info,
 		}
 	}
 
-	num_devices = btrfs_num_devices(fs_info);
+	/*
+	 * Balance is an exculsive operation, so no operation that's going to
+	 * affect rw_devices can run concurrent with it, thus it is safe to
+	 * simply grab the value.  We want rw_devices because we do not want to
+	 * allow restriping if we don't have enough devices we can actually
+	 * allocate from.
+	 */
+	num_devices = fs_info->fs_devices->rw_devices;
 
 	/*
 	 * SINGLE profile on-disk has no profile bit, but in-memory we have a
