@@ -1187,16 +1187,11 @@ int btrfs_reserve_data_bytes(struct btrfs_fs_info *fs_info, u64 bytes,
 {
 	struct btrfs_space_info *data_sinfo = fs_info->data_sinfo;
 	u64 used;
-	int commit_cycles = 2;
 	int ret = -ENOSPC;
 	bool pending_tickets;
 
 	ASSERT(!current->journal_info || flush != BTRFS_RESERVE_FLUSH_DATA);
 
-	if (flush == BTRFS_RESERVE_FLUSH_FREE_SPACE_INODE)
-		commit_cycles = 0;
-
-again:
 	spin_lock(&data_sinfo->lock);
 	used = btrfs_space_info_used(data_sinfo, true);
 	pending_tickets = !list_empty(&data_sinfo->tickets) ||
@@ -1214,15 +1209,12 @@ again:
 
 		ret = handle_reserve_ticket(fs_info, data_sinfo, &ticket,
 					    flush);
-		if (!ret || !commit_cycles)
-			goto out;
-		commit_cycles--;
-		goto again;
+	} else {
+		btrfs_space_info_update_bytes_may_use(fs_info, data_sinfo,
+						      bytes);
+		ret = 0;
 	}
-	btrfs_space_info_update_bytes_may_use(fs_info, data_sinfo, bytes);
-	ret = 0;
 	spin_unlock(&data_sinfo->lock);
-out:
 	if (ret)
 		trace_btrfs_space_reservation(fs_info,
 					      "space_info:enospc",
