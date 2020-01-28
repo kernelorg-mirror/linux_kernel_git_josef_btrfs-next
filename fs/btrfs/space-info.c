@@ -865,24 +865,15 @@ static const enum btrfs_flush_state free_space_inode_flush_states[] = {
 	ALLOC_CHUNK_FORCE,
 };
 
-static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
-				struct btrfs_space_info *space_info,
-				struct reserve_ticket *ticket,
-				const enum btrfs_flush_state *states,
-				int states_nr)
+
+static void priority_reclaim_space(struct btrfs_fs_info *fs_info,
+				   struct btrfs_space_info *space_info,
+				   struct reserve_ticket *ticket,
+				   u64 to_reclaim,
+				   const enum btrfs_flush_state *states,
+				   int states_nr)
 {
-	u64 to_reclaim;
-	int flush_state;
-
-	spin_lock(&space_info->lock);
-	to_reclaim = btrfs_calc_reclaim_metadata_size(fs_info, space_info);
-	if (!to_reclaim) {
-		spin_unlock(&space_info->lock);
-		return;
-	}
-	spin_unlock(&space_info->lock);
-
-	flush_state = 0;
+	int flush_state = 0;
 	do {
 		flush_space(fs_info, space_info, to_reclaim, states[flush_state]);
 		flush_state++;
@@ -893,6 +884,25 @@ static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 		}
 		spin_unlock(&space_info->lock);
 	} while (flush_state < states_nr);
+}
+
+static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
+				struct btrfs_space_info *space_info,
+				struct reserve_ticket *ticket,
+				const enum btrfs_flush_state *states,
+				int states_nr)
+{
+	u64 to_reclaim;
+
+	spin_lock(&space_info->lock);
+	to_reclaim = btrfs_calc_reclaim_metadata_size(fs_info, space_info);
+	if (!to_reclaim) {
+		spin_unlock(&space_info->lock);
+		return;
+	}
+	spin_unlock(&space_info->lock);
+	priority_reclaim_space(fs_info, space_info, ticket, to_reclaim,
+			       states, states_nr);
 }
 
 static void wait_reserve_ticket(struct btrfs_fs_info *fs_info,
@@ -959,6 +969,16 @@ static int handle_reserve_ticket(struct btrfs_fs_info *fs_info,
 		priority_reclaim_metadata_space(fs_info, space_info, ticket,
 						evict_flush_states,
 						ARRAY_SIZE(evict_flush_states));
+		break;
+	case BTRFS_RESERVE_FLUSH_DATA:
+		priority_reclaim_space(fs_info, space_info, ticket, U64_MAX,
+				       data_flush_states,
+				       ARRAY_SIZE(data_flush_states));
+		break;
+	case BTRFS_RESERVE_FLUSH_FREE_SPACE_INODE:
+		priority_reclaim_space(fs_info, space_info, ticket, U64_MAX,
+				free_space_inode_flush_states,
+				ARRAY_SIZE(free_space_inode_flush_states));
 		break;
 	default:
 		ASSERT(0);
@@ -1139,57 +1159,33 @@ int btrfs_reserve_data_bytes(struct btrfs_fs_info *fs_info, u64 bytes,
 			     enum btrfs_reserve_flush_enum flush)
 {
 	struct btrfs_space_info *data_sinfo = fs_info->data_sinfo;
-	const enum btrfs_flush_state *states;
 	u64 used;
-	int states_nr;
 	int commit_cycles = 2;
 	int ret = -ENOSPC;
 
 	ASSERT(!current->journal_info || flush != BTRFS_RESERVE_FLUSH_DATA);
 
-	if (flush == BTRFS_RESERVE_FLUSH_DATA) {
-		states = data_flush_states;
-		states_nr = ARRAY_SIZE(data_flush_states);
-	} else {
-		states = free_space_inode_flush_states;
-		states_nr = ARRAY_SIZE(free_space_inode_flush_states);
+	if (flush == BTRFS_RESERVE_FLUSH_FREE_SPACE_INODE)
 		commit_cycles = 0;
-	}
 
-	spin_lock(&data_sinfo->lock);
 again:
+	spin_lock(&data_sinfo->lock);
 	used = btrfs_space_info_used(data_sinfo, true);
 
 	if (used + bytes > data_sinfo->total_bytes) {
-		u64 prev_total_bytes = data_sinfo->total_bytes;
-		int flush_state = 1;
+		struct reserve_ticket ticket;
 
+		init_waitqueue_head(&ticket.wait);
+		ticket.bytes = bytes;
+		ticket.error = 0;
+		list_add_tail(&ticket.list, &data_sinfo->priority_tickets);
 		spin_unlock(&data_sinfo->lock);
 
-		/*
-		 * Everybody can force chunk allocation, so try this first to
-		 * see if we can just bail here and make our reservation.
-		 */
-		flush_space(fs_info, data_sinfo, bytes, ALLOC_CHUNK_FORCE);
-		spin_lock(&data_sinfo->lock);
-		if (prev_total_bytes < data_sinfo->total_bytes)
-			goto again;
-		spin_unlock(&data_sinfo->lock);
-
-		if (!commit_cycles)
+		ret = handle_reserve_ticket(fs_info, data_sinfo, &ticket,
+					    flush);
+		if (!ret || !commit_cycles)
 			goto out;
-
-		/*
-		 * Cycle through the rest of the flushing options for our flush
-		 * type, then try again.
-		 */
-		while (flush_state < states_nr) {
-			flush_space(fs_info, data_sinfo, (u64)-1,
-				    states[flush_state]);
-			flush_state++;
-		}
 		commit_cycles--;
-		spin_lock(&data_sinfo->lock);
 		goto again;
 	}
 	btrfs_space_info_update_bytes_may_use(fs_info, data_sinfo, bytes);
