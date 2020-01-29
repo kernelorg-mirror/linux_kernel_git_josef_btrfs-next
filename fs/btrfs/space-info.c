@@ -862,17 +862,12 @@ static const enum btrfs_flush_state data_flush_states[] = {
 	COMMIT_TRANS,
 };
 
-static const enum btrfs_flush_state free_space_inode_flush_states[] = {
-	ALLOC_CHUNK_FORCE,
-};
-
-
-static void priority_reclaim_space(struct btrfs_fs_info *fs_info,
-				   struct btrfs_space_info *space_info,
-				   struct reserve_ticket *ticket,
-				   u64 to_reclaim,
-				   const enum btrfs_flush_state *states,
-				   int states_nr)
+static int priority_reclaim_space(struct btrfs_fs_info *fs_info,
+				  struct btrfs_space_info *space_info,
+				  struct reserve_ticket *ticket,
+				  u64 to_reclaim,
+				  const enum btrfs_flush_state *states,
+				  int states_nr)
 {
 	int flush_state = 0;
 	do {
@@ -881,10 +876,11 @@ static void priority_reclaim_space(struct btrfs_fs_info *fs_info,
 		spin_lock(&space_info->lock);
 		if (ticket->bytes == 0) {
 			spin_unlock(&space_info->lock);
-			return;
+			return 0;
 		}
 		spin_unlock(&space_info->lock);
 	} while (flush_state < states_nr);
+	return -ENOSPC;
 }
 
 static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
@@ -904,6 +900,41 @@ static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 	spin_unlock(&space_info->lock);
 	priority_reclaim_space(fs_info, space_info, ticket, to_reclaim,
 			       states, states_nr);
+}
+
+static void priority_reclaim_data_space(struct btrfs_fs_info *fs_info,
+					struct btrfs_space_info *space_info,
+					struct reserve_ticket *ticket,
+					enum btrfs_reserve_flush_enum flush)
+{
+	int ret;
+
+	/*
+	 * First see if we can reclaim pinned space before forcing a bunch of
+	 * chunk allocations.
+	 */
+	if (flush == BTRFS_RESERVE_FLUSH_DATA) {
+		ret = priority_reclaim_space(fs_info, space_info, ticket,
+					     U64_MAX, data_flush_states,
+					     ARRAY_SIZE(data_flush_states));
+		if (!ret)
+			return;
+	}
+
+	/*
+	 * The chunk allocator will only allocate min(10% of the fs, 1gib) at a
+	 * time, but our reservation may be much larger than that threshold, so
+	 * loop allocating chunks until we're able to satisfy our allocation.
+	 */
+	while (1) {
+		flush_space(fs_info, space_info, U64_MAX, ALLOC_CHUNK_FORCE);
+		spin_lock(&space_info->lock);
+		if (ticket->bytes == 0 || space_info->full) {
+			spin_unlock(&space_info->lock);
+			return;
+		}
+		spin_unlock(&space_info->lock);
+	}
 }
 
 static void wait_reserve_ticket(struct btrfs_fs_info *fs_info,
@@ -972,14 +1003,9 @@ static int handle_reserve_ticket(struct btrfs_fs_info *fs_info,
 						ARRAY_SIZE(evict_flush_states));
 		break;
 	case BTRFS_RESERVE_FLUSH_DATA:
-		priority_reclaim_space(fs_info, space_info, ticket, U64_MAX,
-				       data_flush_states,
-				       ARRAY_SIZE(data_flush_states));
-		break;
 	case BTRFS_RESERVE_FLUSH_FREE_SPACE_INODE:
-		priority_reclaim_space(fs_info, space_info, ticket, U64_MAX,
-				free_space_inode_flush_states,
-				ARRAY_SIZE(free_space_inode_flush_states));
+		priority_reclaim_data_space(fs_info, space_info, ticket,
+					    flush);
 		break;
 	default:
 		ASSERT(0);
