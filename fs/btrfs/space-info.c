@@ -917,27 +917,6 @@ static const enum btrfs_flush_state evict_flush_states[] = {
 	COMMIT_TRANS,
 };
 
-static int priority_reclaim_space(struct btrfs_fs_info *fs_info,
-				  struct btrfs_space_info *space_info,
-				  struct reserve_ticket *ticket,
-				  u64 to_reclaim,
-				  const enum btrfs_flush_state *states,
-				  int states_nr)
-{
-	int flush_state = 0;
-	do {
-		flush_space(fs_info, space_info, to_reclaim, states[flush_state]);
-		flush_state++;
-		spin_lock(&space_info->lock);
-		if (ticket->bytes == 0) {
-			spin_unlock(&space_info->lock);
-			return 0;
-		}
-		spin_unlock(&space_info->lock);
-	} while (flush_state < states_nr);
-	return -ENOSPC;
-}
-
 static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 				struct btrfs_space_info *space_info,
 				struct reserve_ticket *ticket,
@@ -945,6 +924,7 @@ static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 				int states_nr)
 {
 	u64 to_reclaim;
+	int flush_state = 0;
 
 	spin_lock(&space_info->lock);
 	to_reclaim = btrfs_calc_reclaim_metadata_size(fs_info, space_info);
@@ -953,8 +933,17 @@ static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 		return;
 	}
 	spin_unlock(&space_info->lock);
-	priority_reclaim_space(fs_info, space_info, ticket, to_reclaim,
-			       states, states_nr);
+
+	do {
+		flush_space(fs_info, space_info, to_reclaim, states[flush_state]);
+		flush_state++;
+		spin_lock(&space_info->lock);
+		if (ticket->bytes == 0) {
+			spin_unlock(&space_info->lock);
+			return;
+		}
+		spin_unlock(&space_info->lock);
+	} while (flush_state < states_nr);
 }
 
 static void priority_reclaim_data_space(struct btrfs_fs_info *fs_info,
