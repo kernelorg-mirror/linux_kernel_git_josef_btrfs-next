@@ -9919,6 +9919,14 @@ static int __btrfs_prealloc_file_range(struct inode *inode, int mode,
 						  ins.offset, 0, 0, 0,
 						  BTRFS_FILE_EXTENT_PREALLOC);
 		if (ret) {
+			/*
+			 * We've reserved this space, and thus converted it from
+			 * ->bytes_may_use to ->bytes_reserved, which we cleanup
+			 * here.  We need to adjust cur_offset so that we only
+			 * drop the ->bytes_may_use for the area we still have
+			 * remaining in ->>bytes_may_use.
+			 */
+			cur_offset += ins.objectid;
 			btrfs_free_reserved_extent(fs_info, ins.objectid,
 						   ins.offset, 0);
 			btrfs_abort_transaction(trans, ret);
