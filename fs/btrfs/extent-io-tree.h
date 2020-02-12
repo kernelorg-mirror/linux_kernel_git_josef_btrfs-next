@@ -223,6 +223,8 @@ int find_first_extent_bit(struct extent_io_tree *tree, u64 start,
 			  struct extent_state **cached_state);
 void find_first_clear_extent_bit(struct extent_io_tree *tree, u64 start,
 				 u64 *start_ret, u64 *end_ret, unsigned bits);
+int find_contiguous_extent_bit(struct extent_io_tree *tree, u64 start,
+			       u64 *start_ret, u64 *end_ret, unsigned bits);
 int extent_invalidatepage(struct extent_io_tree *tree,
 			  struct page *page, unsigned long offset);
 bool btrfs_find_delalloc_range(struct extent_io_tree *tree, u64 *start,
