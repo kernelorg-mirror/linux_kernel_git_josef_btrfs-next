@@ -4286,6 +4286,7 @@ static int btrfs_uuid_scan_kthread(void *data)
 	struct btrfs_root_item root_item;
 	u32 item_size;
 	struct btrfs_trans_handle *trans = NULL;
+	bool closing = false;
 
 	path = btrfs_alloc_path();
 	if (!path) {
@@ -4298,6 +4299,10 @@ static int btrfs_uuid_scan_kthread(void *data)
 	key.offset = 0;
 
 	while (1) {
+		if (btrfs_fs_closing(fs_info)) {
+			closing = true;
+			break;
+		}
 		ret = btrfs_search_forward(root, &key, path,
 				BTRFS_OLDEST_GENERATION);
 		if (ret) {
@@ -4397,7 +4402,7 @@ out:
 		btrfs_end_transaction(trans);
 	if (ret)
 		btrfs_warn(fs_info, "btrfs_uuid_scan_kthread failed %d", ret);
-	else
+	else if (!closing)
 		set_bit(BTRFS_FS_UPDATE_UUID_TREE_GEN, &fs_info->flags);
 	up(&fs_info->uuid_tree_rescan_sem);
 	return 0;
@@ -4460,7 +4465,9 @@ static int btrfs_uuid_rescan_kthread(void *data)
 	 */
 	ret = btrfs_uuid_tree_iterate(fs_info, btrfs_check_uuid_tree_entry);
 	if (ret < 0) {
-		btrfs_warn(fs_info, "iterating uuid_tree failed %d", ret);
+		if (ret != -EINTR)
+			btrfs_warn(fs_info, "iterating uuid_tree failed %d",
+				   ret);
 		up(&fs_info->uuid_tree_rescan_sem);
 		return ret;
 	}
