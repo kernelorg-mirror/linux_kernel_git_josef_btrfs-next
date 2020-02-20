@@ -2015,9 +2015,14 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	struct btrfs_fs_info *fs_info = trans->fs_info;
 	struct btrfs_transaction *cur_trans = trans->transaction;
 	struct btrfs_transaction *prev_trans = NULL;
+	time64_t start, cur;
 	int ret;
 
 	ASSERT(refcount_read(&trans->use_count) == 1);
+
+	if ((ktime_get_seconds() - cur_trans->start_time) > 45)
+		printk(KERN_ERR "trans %llu it took us %llu seconds to decide to commit\n",
+		       cur_trans->transid, ktime_get_seconds() - cur_trans->start_time);
 
 	/*
 	 * Some places just start a transaction to commit it.  We need to make
@@ -2026,6 +2031,8 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	 * the right thing.
 	 */
 	trans->dirty = true;
+
+	start = ktime_get_seconds();
 
 	/* Stop the commit early if ->aborted is set */
 	if (TRANS_ABORTED(cur_trans)) {
@@ -2040,12 +2047,15 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	/* make a pass through all the delayed refs we have so far
 	 * any runnings procs may add more while we are here
 	 */
+	cur = ktime_get_seconds();
 	ret = btrfs_run_delayed_refs(trans, 0);
 	if (ret) {
 		btrfs_end_transaction(trans);
 		return ret;
 	}
-
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds for initial delayed refs run\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 	cur_trans = trans->transaction;
 
 	/*
@@ -2057,11 +2067,15 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 
 	btrfs_create_pending_block_groups(trans);
 
+	cur = ktime_get_seconds();
 	ret = btrfs_run_delayed_refs(trans, 0);
 	if (ret) {
 		btrfs_end_transaction(trans);
 		return ret;
 	}
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds for second delayed refs run\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 
 	if (!test_bit(BTRFS_TRANS_DIRTY_BG_RUN, &cur_trans->flags)) {
 		int run_it = 0;
@@ -2094,6 +2108,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 		}
 	}
 
+	cur = ktime_get_seconds();
 	spin_lock(&fs_info->trans_lock);
 	if (cur_trans->state >= TRANS_STATE_COMMIT_START) {
 		spin_unlock(&fs_info->trans_lock);
@@ -2143,23 +2158,43 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 		}
 	}
 
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds for start commit stuff\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
+
 	extwriter_counter_dec(cur_trans, trans->type);
 
+	cur = ktime_get_seconds();
 	ret = btrfs_start_delalloc_flush(trans);
 	if (ret)
 		goto cleanup_transaction;
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds to start delalloc flush\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 
+	cur = ktime_get_seconds();
 	ret = btrfs_run_delayed_items(trans);
 	if (ret)
 		goto cleanup_transaction;
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds to run delayed items\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 
+	cur = ktime_get_seconds();
 	wait_event(cur_trans->writer_wait,
 		   extwriter_counter_read(cur_trans) == 0);
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds waiting for external writers\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 
 	/* some pending stuffs might be added after the previous flush. */
+	cur = ktime_get_seconds();
 	ret = btrfs_run_delayed_items(trans);
 	if (ret)
 		goto cleanup_transaction;
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds for second delayed items\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 
 	btrfs_wait_delalloc_flush(trans);
 
@@ -2172,8 +2207,12 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	spin_lock(&fs_info->trans_lock);
 	cur_trans->state = TRANS_STATE_COMMIT_DOING;
 	spin_unlock(&fs_info->trans_lock);
+	cur = ktime_get_seconds();
 	wait_event(cur_trans->writer_wait,
 		   atomic_read(&cur_trans->num_writers) == 1);
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds waiting for all joiners\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
 
 	if (TRANS_ABORTED(cur_trans)) {
 		ret = cur_trans->aborted;
@@ -2184,6 +2223,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	 * the balancing code from coming in and moving
 	 * extents around in the middle of the commit
 	 */
+	cur = ktime_get_seconds();
 	mutex_lock(&fs_info->reloc_mutex);
 
 	/*
@@ -2340,6 +2380,10 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 
 	wake_up(&fs_info->transaction_wait);
 
+	if ((ktime_get_seconds() - cur) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds for core commit work\n",
+		       cur_trans->transid, ktime_get_seconds() - cur);
+
 	ret = btrfs_write_and_wait_transaction(trans);
 	if (ret) {
 		btrfs_handle_fs_error(fs_info, ret,
@@ -2374,6 +2418,10 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	spin_lock(&fs_info->trans_lock);
 	list_del_init(&cur_trans->list);
 	spin_unlock(&fs_info->trans_lock);
+
+	if ((ktime_get_seconds() - start) > 5)
+		printk(KERN_ERR "trans %llu took %llu seconds for full commit\n",
+		       cur_trans->transid, ktime_get_seconds() - start);
 
 	btrfs_put_transaction(cur_trans);
 	btrfs_put_transaction(cur_trans);
