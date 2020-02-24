@@ -2082,6 +2082,7 @@ static noinline int __btrfs_run_delayed_refs(struct btrfs_trans_handle *trans,
 		u64 runtime = ktime_to_ns(ktime_sub(ktime_get(), start));
 		u64 avg;
 
+		runtime = div64_u64(runtime, actual_count);
 		/*
 		 * We weigh the current average higher than our current runtime
 		 * to avoid large swings in the average.
