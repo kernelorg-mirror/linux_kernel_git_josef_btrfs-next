@@ -867,7 +867,7 @@ int btrfs_should_end_transaction(struct btrfs_trans_handle *trans)
 	    cur_trans->delayed_refs.flushing)
 		return 1;
 
-	if (btrfs_should_throttle_delayed_refs(trans, true) ||
+	if (btrfs_should_throttle_delayed_refs(fs_info, &cur_trans->delayed_refs, true) ||
 	    btrfs_check_space_for_delayed_refs(fs_info))
 		return 1;
 
@@ -896,14 +896,15 @@ static void btrfs_trans_release_metadata(struct btrfs_trans_handle *trans)
 }
 
 static void noinline
-btrfs_throttle_for_delayed_refs(struct btrfs_delayed_ref_root *delayed_refs,
+btrfs_throttle_for_delayed_refs(struct btrfs_fs_info *fs_info,
+				struct btrfs_delayed_ref_root *delayed_refs,
 				unsigned long refs)
 {
 	unsigned long threshold = max(refs, 1UL) +
 		atomic_read(&delayed_refs->entries_run);
 	wait_event_interruptible(delayed_refs->wait,
 		 (atomic_read(&delayed_refs->entries_run) >= threshold) ||
-		 (atomic_read(&delayed_refs->num_entries) == 0));
+		 !btrfs_should_throttle_delayed_refs(fs_info, delayed_refs, false));
 }
 
 static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
@@ -922,7 +923,7 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 		return 0;
 	}
 
-	if (btrfs_should_throttle_delayed_refs(trans, throttle))
+	if (btrfs_should_throttle_delayed_refs(info, &cur_trans->delayed_refs, throttle))
 		run_async = true;
 
 	btrfs_trans_release_metadata(trans);
@@ -966,7 +967,7 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	 * callers.
 	 */
 	if (run_async && (trans_type & __TRANS_START))
-		btrfs_throttle_for_delayed_refs(&cur_trans->delayed_refs,
+		btrfs_throttle_for_delayed_refs(info, &cur_trans->delayed_refs,
 						total_delayed_refs);
 	btrfs_put_transaction(cur_trans);
 
