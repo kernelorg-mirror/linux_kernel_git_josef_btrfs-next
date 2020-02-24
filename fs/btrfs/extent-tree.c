@@ -2262,7 +2262,7 @@ static void btrfs_async_run_delayed_refs(struct work_struct *work)
 		}
 
 		count = atomic_read(&trans->transaction->delayed_refs.num_entries);
-		count >>= 1;
+		count >>= 2;
 
 		ret = btrfs_run_delayed_refs(trans, count);
 		btrfs_end_transaction(trans);
