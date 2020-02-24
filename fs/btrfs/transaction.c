@@ -916,6 +916,7 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	unsigned int trans_type = trans->type;
 	int err = 0;
 	bool run_async = false;
+	bool throttle_delayed_refs = false;
 
 	if (refcount_read(&trans->use_count) > 1) {
 		refcount_dec(&trans->use_count);
@@ -923,8 +924,12 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 		return 0;
 	}
 
-	if (btrfs_should_throttle_delayed_refs(info, &cur_trans->delayed_refs, throttle))
+	if (btrfs_should_throttle_delayed_refs(info, &cur_trans->delayed_refs, throttle)) {
 		run_async = true;
+		throttle_delayed_refs = true;
+	} else if (btrfs_should_throttle_delayed_refs(info, &cur_trans->delayed_refs, true)) {
+		run_async = true;
+	}
 
 	btrfs_trans_release_metadata(trans);
 	trans->block_rsv = NULL;
@@ -966,7 +971,7 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	 * We only want to throttle generators, so btrfs_transaction_start
 	 * callers.
 	 */
-	if (run_async && (trans_type & __TRANS_START))
+	if (throttle_delayed_refs && total_delayed_refs && (trans_type & __TRANS_START))
 		btrfs_throttle_for_delayed_refs(info, &cur_trans->delayed_refs,
 						total_delayed_refs);
 	btrfs_put_transaction(cur_trans);
