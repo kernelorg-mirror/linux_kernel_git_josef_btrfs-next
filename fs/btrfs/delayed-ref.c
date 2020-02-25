@@ -65,7 +65,7 @@ bool btrfs_should_throttle_delayed_refs(struct btrfs_fs_info *fs_info,
 		return true;
 	if (!for_throttle)
 		return false;
-	return (val >= NSEC_PER_SEC / 2);
+	return (val >= (NSEC_PER_SEC >> 2));
 }
 
 /**
