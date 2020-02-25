@@ -902,9 +902,13 @@ btrfs_throttle_for_delayed_refs(struct btrfs_fs_info *fs_info,
 {
 	unsigned long threshold = max(refs, 1UL) +
 		atomic_read(&delayed_refs->entries_run);
+	time64_t start = ktime_get_seconds();
 	wait_event_interruptible(delayed_refs->wait,
 		 (atomic_read(&delayed_refs->entries_run) >= threshold) ||
 		 !btrfs_should_throttle_delayed_refs(fs_info, delayed_refs, false));
+	if ((ktime_get_seconds() - start) > 1)
+		printk(KERN_ERR "we throttled for %llu seconds on %lu refs\n",
+		       ktime_get_seconds() - start, refs);
 }
 
 static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,

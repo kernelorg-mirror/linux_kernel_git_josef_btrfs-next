@@ -2201,6 +2201,11 @@ int btrfs_run_delayed_refs(struct btrfs_trans_handle *trans,
 		return 0;
 
 	delayed_refs = &trans->transaction->delayed_refs;
+
+	if (count == 0 || run_all)
+		printk(KERN_ERR "doing the delayed ref %s flushing %d\n",
+		       run_all ? "everything" : "pre", atomic_read(&delayed_refs->num_entries));
+
 	if (count == 0)
 		count = atomic_read(&delayed_refs->num_entries) * 2;
 
