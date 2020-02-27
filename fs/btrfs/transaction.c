@@ -2037,6 +2037,13 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	btrfs_trans_release_metadata(trans);
 	trans->block_rsv = NULL;
 
+	/*
+	 * set the flushing flag so procs in this transaction have to
+	 * start sending their work down.
+	 */
+	cur_trans->delayed_refs.flushing = 1;
+	smp_wmb();
+
 	/* make a pass through all the delayed refs we have so far
 	 * any runnings procs may add more while we are here
 	 */
@@ -2047,13 +2054,6 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	}
 
 	cur_trans = trans->transaction;
-
-	/*
-	 * set the flushing flag so procs in this transaction have to
-	 * start sending their work down.
-	 */
-	cur_trans->delayed_refs.flushing = 1;
-	smp_wmb();
 
 	btrfs_create_pending_block_groups(trans);
 
