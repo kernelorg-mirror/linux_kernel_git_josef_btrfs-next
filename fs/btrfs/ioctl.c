@@ -2388,7 +2388,7 @@ static int btrfs_search_path_in_tree_user(struct inode *inode,
 	unsigned long item_len;
 	struct btrfs_inode_ref *iref;
 	struct btrfs_root_ref *rref;
-	struct btrfs_root *root;
+	struct btrfs_root *root = NULL;
 	struct btrfs_path *path;
 	struct btrfs_key key, key2;
 	struct extent_buffer *leaf;
