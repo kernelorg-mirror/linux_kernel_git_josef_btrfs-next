@@ -2800,7 +2800,7 @@ static int reserve_metadata_space(struct btrfs_trans_handle *trans,
 	if (btrfs_check_space_for_delayed_refs(fs_info) ||
 	    btrfs_should_throttle_delayed_refs(fs_info,
 					       &trans->transaction->delayed_refs,
-					       false)) {
+					       true)) {
 		printk(KERN_ERR "throttling relocation for delayed refs\n");
 		return -EAGAIN;
 	}
