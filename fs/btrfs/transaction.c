@@ -905,6 +905,11 @@ btrfs_throttle_for_delayed_refs(struct btrfs_fs_info *fs_info,
 		atomic_read(&delayed_refs->entries_run);
 	time64_t start = ktime_get_seconds();
 
+	if (refs > 30) {
+		printk(KERN_ERR "WTF is generating this many delayed refs?\n");
+		dump_stack();
+	}
+
 	spin_lock(&delayed_refs->lock);
 	if (delayed_refs->last_adjustment - start >= 1) {
 		delayed_refs->last_adjustment = start;
