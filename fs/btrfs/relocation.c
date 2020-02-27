@@ -3233,7 +3233,7 @@ int relocate_tree_blocks(struct btrfs_trans_handle *trans,
 		if (ret < 0) {
 			if (ret != -EAGAIN || &block->rb_node == rb_first(blocks))
 				err = ret;
-			goto out;
+			goto out_free_path;
 		}
 	}
 out:
