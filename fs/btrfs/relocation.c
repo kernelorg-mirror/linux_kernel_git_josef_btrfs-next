@@ -4678,6 +4678,7 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 		fs_root = read_fs_root(fs_info, reloc_root->root_key.offset);
 		if (IS_ERR(fs_root)) {
 			err = PTR_ERR(fs_root);
+			unset_reloc_control(rc);
 			list_add_tail(&reloc_root->root_list, &reloc_roots);
 			goto out_free;
 		}
@@ -4689,8 +4690,10 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 	}
 
 	err = btrfs_commit_transaction(trans);
-	if (err)
+	if (err) {
+		unset_reloc_control(rc);
 		goto out_free;
+	}
 
 	merge_reloc_roots(rc);
 
