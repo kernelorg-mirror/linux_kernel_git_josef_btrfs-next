@@ -4710,6 +4710,9 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 	if (ret < 0 && !err)
 		err = ret;
 out_free:
+	mutex_lock(&fs_info->reloc_mutex);
+	list_splice_init(&rc->reloc_roots, &reloc_roots);
+	mutex_unlock(&fs_info->reloc_mutex);
 	kfree(rc);
 out:
 	if (!list_empty(&reloc_roots))
