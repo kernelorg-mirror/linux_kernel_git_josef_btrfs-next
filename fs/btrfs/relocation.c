@@ -3151,7 +3151,7 @@ static int relocate_tree_block(struct btrfs_trans_handle *trans,
 	if (!root || test_bit(BTRFS_ROOT_REF_COWS, &root->state)) {
 		ret = reserve_metadata_space(trans, rc, node);
 		if (ret)
-			goto out;
+			return ret;
 	}
 
 	if (root) {
