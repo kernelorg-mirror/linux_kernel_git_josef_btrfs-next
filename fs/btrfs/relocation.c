@@ -3141,17 +3141,15 @@ static int relocate_tree_block(struct btrfs_trans_handle *trans,
 	if (!node)
 		return 0;
 
+	ret = reserve_metadata_space(trans, rc, node);
+	if (ret)
+		return ret;
+
 	BUG_ON(node->processed);
 	root = select_one_root(node);
 	if (root == ERR_PTR(-ENOENT)) {
 		update_processed_blocks(rc, node);
 		goto out;
-	}
-
-	if (!root || test_bit(BTRFS_ROOT_REF_COWS, &root->state)) {
-		ret = reserve_metadata_space(trans, rc, node);
-		if (ret)
-			return ret;
 	}
 
 	if (root) {
