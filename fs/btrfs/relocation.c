@@ -4275,6 +4275,7 @@ restart:
 	/* get rid of pinned extents */
 	trans = btrfs_join_transaction(rc->extent_root);
 	if (IS_ERR(trans)) {
+		clean_dirty_subvols(rc);
 		err = PTR_ERR(trans);
 		goto out_free;
 	}
@@ -4701,6 +4702,7 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 
 	trans = btrfs_join_transaction(rc->extent_root);
 	if (IS_ERR(trans)) {
+		clean_dirty_subvols(rc);
 		err = PTR_ERR(trans);
 		goto out_free;
 	}
