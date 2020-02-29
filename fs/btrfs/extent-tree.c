@@ -2204,7 +2204,7 @@ int btrfs_run_delayed_refs(struct btrfs_trans_handle *trans,
 		       run_all ? "everything" : "pre", atomic_read(&delayed_refs->num_entries));
 
 	if (count == 0)
-		count = atomic_read(&delayed_refs->num_entries) * 2;
+		count = delayed_refs->num_heads_ready;
 
 again:
 #ifdef SCRAMBLE_DELAYED_REFS
