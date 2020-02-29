@@ -2110,20 +2110,6 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	cur_trans->delayed_refs.flushing = 1;
 	smp_wmb();
 
-	/* make a pass through all the delayed refs we have so far
-	 * any runnings procs may add more while we are here
-	 */
-	cur = ktime_get_seconds();
-	ret = btrfs_run_delayed_refs(trans, 0);
-	if (ret) {
-		btrfs_end_transaction(trans);
-		return ret;
-	}
-	if ((ktime_get_seconds() - cur) > 5)
-		printk(KERN_ERR "trans %llu took %llu seconds for initial delayed refs run\n",
-		       cur_trans->transid, ktime_get_seconds() - cur);
-	cur_trans = trans->transaction;
-
 	btrfs_create_pending_block_groups(trans);
 
 	cur = ktime_get_seconds();
@@ -2133,7 +2119,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 		return ret;
 	}
 	if ((ktime_get_seconds() - cur) > 5)
-		printk(KERN_ERR "trans %llu took %llu seconds for second delayed refs run\n",
+		printk(KERN_ERR "trans %llu took %llu seconds for first delayed refs run\n",
 		       cur_trans->transid, ktime_get_seconds() - cur);
 
 	if (!test_bit(BTRFS_TRANS_DIRTY_BG_RUN, &cur_trans->flags)) {
