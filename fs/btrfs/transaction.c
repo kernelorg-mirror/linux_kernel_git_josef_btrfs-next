@@ -157,6 +157,7 @@ static noinline void switch_commit_roots(struct btrfs_trans_handle *trans)
 	list_for_each_entry_safe(root, tmp, &cur_trans->switch_commits,
 				 dirty_list) {
 		list_del_init(&root->dirty_list);
+
 		free_extent_buffer(root->commit_root);
 		root->commit_root = btrfs_root_node(root);
 		if (is_fstree(root->root_key.objectid))
