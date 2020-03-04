@@ -906,9 +906,6 @@ btrfs_throttle_for_delayed_refs(struct btrfs_fs_info *fs_info,
 		atomic_read(&delayed_refs->entries_run);
 	time64_t start = ktime_get_seconds();
 
-	if (refs > 30)
-		printk(KERN_ERR "WTF is generating this many delayed refs? %lu\n", refs);
-
 	spin_lock(&delayed_refs->lock);
 	if (delayed_refs->last_adjustment - start >= 1) {
 		delayed_refs->last_adjustment = start;
@@ -940,6 +937,9 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 		trans->block_rsv = trans->orig_rsv;
 		return 0;
 	}
+
+	if (throttle && btrfs_should_end_transaction(trans))
+		return btrfs_commit_transaction(trans);
 
 	if (btrfs_should_throttle_delayed_refs(info, &cur_trans->delayed_refs, throttle)) {
 		run_async = true;
@@ -997,9 +997,12 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	 * We only want to throttle generators, so btrfs_transaction_start
 	 * callers.
 	 */
-	if (throttle_delayed_refs && total_delayed_refs && (trans_type & __TRANS_START))
-		btrfs_throttle_for_delayed_refs(info, &cur_trans->delayed_refs,
+	if (throttle_delayed_refs && total_delayed_refs &&
+	    (trans_type & __TRANS_START)) {
+		btrfs_throttle_for_delayed_refs(info,
+						&cur_trans->delayed_refs,
 						total_delayed_refs);
+	}
 	btrfs_put_transaction(cur_trans);
 
 	return err;
