@@ -514,6 +514,7 @@ static void swap_backref_node(struct backref_cache *cache,
 {
 	struct backref_edge *edge, *tmp;
 
+	BUG_ON(new->root != node->root);
 	list_for_each_entry_safe(edge, tmp, &node->lower, list[UPPER]) {
 		list_del_init(&edge->list[UPPER]);
 		edge->node[UPPER] = new;
