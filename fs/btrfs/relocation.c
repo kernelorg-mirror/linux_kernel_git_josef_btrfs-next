@@ -3173,7 +3173,7 @@ static int relocate_tree_block(struct btrfs_trans_handle *trans,
 
 	ret = reserve_metadata_space(trans, rc, node);
 	if (ret)
-		goto out;
+		return ret;
 
 	BUG_ON(node->processed);
 	root = select_one_root(node);
