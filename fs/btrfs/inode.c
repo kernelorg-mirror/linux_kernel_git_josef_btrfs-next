@@ -4386,6 +4386,21 @@ delete:
 			 * let the normal reservation dance happen higher up.
 			 */
 			if (should_throttle) {
+				struct btrfs_transaction *cur_trans =
+					trans->transaction;
+
+				/*
+				 * If we're over time, or we're flushing, go
+				 * ahead and break out so that we can let
+				 * everybody catch up.
+				 */
+				if (btrfs_should_throttle_delayed_refs(fs_info,
+					&cur_trans->delayed_refs, false) ||
+				    cur_trans->delayed_refs.flushing) {
+					ret = -EAGAIN;
+					break;
+				}
+
 				ret = btrfs_delayed_refs_rsv_refill(fs_info,
 							BTRFS_RESERVE_NO_FLUSH);
 				if (ret) {
