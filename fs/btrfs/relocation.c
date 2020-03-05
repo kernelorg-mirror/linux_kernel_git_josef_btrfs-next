@@ -94,6 +94,8 @@ struct backref_node {
 	struct list_head upper;
 	/* list of child blocks in the cache */
 	struct list_head lower;
+
+	struct list_head leak_list;
 	/* NULL if this node is not tree root */
 	struct btrfs_root *root;
 	/* extent buffer got by COW the block */
@@ -120,6 +122,8 @@ struct backref_node {
 	 * backref node.
 	 */
 	unsigned int detached:1;
+	unsigned int fucked1;
+	unsigned int fucked2;
 };
 
 /*
@@ -151,6 +155,8 @@ struct backref_cache {
 	struct list_head changed;
 	/* list of detached backref node. */
 	struct list_head detached;
+
+	struct list_head alloced;
 
 	u64 last_trans;
 
@@ -254,6 +260,7 @@ static void backref_cache_init(struct backref_cache *cache)
 	INIT_LIST_HEAD(&cache->changed);
 	INIT_LIST_HEAD(&cache->detached);
 	INIT_LIST_HEAD(&cache->leaves);
+	INIT_LIST_HEAD(&cache->alloced);
 }
 
 static void backref_cache_cleanup(struct backref_cache *cache)
@@ -277,11 +284,19 @@ static void backref_cache_cleanup(struct backref_cache *cache)
 
 	for (i = 0; i < BTRFS_MAX_LEVEL; i++)
 		ASSERT(list_empty(&cache->pending[i]));
+
+	while (!list_empty(&cache->alloced)) {
+		node = list_first_entry(&cache->alloced, struct backref_node,
+					leak_list);
+		printk(KERN_ERR "node fucked 1 %d fucked 2 %d\n", node->fucked1,
+		       node->fucked2);
+		remove_backref_node(cache, node);
+	}
 	ASSERT(list_empty(&cache->changed));
 	ASSERT(list_empty(&cache->detached));
 	ASSERT(RB_EMPTY_ROOT(&cache->rb_root));
-	ASSERT(!cache->nr_nodes);
 	ASSERT(!cache->nr_edges);
+	ASSERT(!cache->nr_nodes);
 }
 
 static struct backref_node *alloc_backref_node(struct backref_cache *cache)
@@ -293,8 +308,10 @@ static struct backref_node *alloc_backref_node(struct backref_cache *cache)
 		INIT_LIST_HEAD(&node->list);
 		INIT_LIST_HEAD(&node->upper);
 		INIT_LIST_HEAD(&node->lower);
+		INIT_LIST_HEAD(&node->leak_list);
 		RB_CLEAR_NODE(&node->rb_node);
 		cache->nr_nodes++;
+		list_add_tail(&node->leak_list, &cache->alloced);
 	}
 	return node;
 }
@@ -304,6 +321,7 @@ static void free_backref_node(struct backref_cache *cache,
 {
 	if (node) {
 		cache->nr_nodes--;
+		list_del_init(&node->leak_list);
 		btrfs_put_root(node->root);
 		kfree(node);
 	}
@@ -520,6 +538,7 @@ static void swap_backref_node(struct backref_cache *cache,
 		edge->node[UPPER] = new;
 		list_add_tail(&edge->list[UPPER], &new->lower);
 	}
+	ASSERT(list_empty(&node->upper));
 }
 
 static void update_backref_node(struct backref_cache *cache,
@@ -791,8 +810,8 @@ static struct backref_node *build_backref_tree(struct reloc_control *rc,
 	rb_node = tree_search(&cache->rb_root, bytenr);
 	if (rb_node) {
 		node = rb_entry(rb_node, struct backref_node, rb_node);
-		if (node->checked)
-			goto out;
+		ASSERT(node->checked);
+		goto out;
 	} else {
 		node = alloc_backref_node(cache);
 		if (!node) {
@@ -1068,6 +1087,7 @@ again:
 				else
 					upper->checked = 1;
 
+				upper->fucked1 = 1;
 				/*
 				 * add the block to pending list if we
 				 * need check its backrefs, we only do this once
@@ -3033,6 +3053,8 @@ next:
 		drop_node_buffer(node);
 		list_move_tail(&node->list, &rc->backref_cache.changed);
 		node->pending = 0;
+	} else if (err) {
+		node->fucked2 = 1;
 	}
 
 	path->lowest_level = 0;
@@ -3180,7 +3202,7 @@ static int relocate_tree_block(struct btrfs_trans_handle *trans,
 
 	ret = reserve_metadata_space(trans, rc, node);
 	if (ret)
-		return ret;
+		goto out;
 
 	BUG_ON(node->processed);
 	root = select_one_root(node);
@@ -4250,8 +4272,9 @@ restart:
 				 * We need update_backref_cache to handle any
 				 * pending nodes that are on our backref cache
 				 * when we loop around.
-				 */
+				 *
 				rc->backref_cache.last_trans = trans->transid - 1;
+				*/
 				rc->extents_found--;
 				rc->search_start = key.objectid;
 			}
