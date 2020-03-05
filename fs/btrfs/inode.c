@@ -4386,6 +4386,13 @@ delete:
 			 * let the normal reservation dance happen higher up.
 			 */
 			if (should_throttle) {
+				if (btrfs_should_throttle_delayed_refs(fs_info,
+								       &trans->transaction->delayed_refs,
+								       true) ||
+				    trans->transaction->delayed_refs.flushing) {
+					ret = -EAGAIN;
+					break;
+				}
 				ret = btrfs_delayed_refs_rsv_refill(fs_info,
 							BTRFS_RESERVE_NO_FLUSH);
 				if (ret) {

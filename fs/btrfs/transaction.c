@@ -938,8 +938,10 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 		return 0;
 	}
 
-	if (throttle && btrfs_should_end_transaction(trans))
-		return btrfs_commit_transaction(trans);
+	if (trans->delayed_ref_updates > 200) {
+		printk(KERN_ERR "WTF %lu\n", trans->delayed_ref_updates);
+		dump_stack();
+	}
 
 	if (btrfs_should_throttle_delayed_refs(info, &cur_trans->delayed_refs, throttle)) {
 		run_async = true;
@@ -999,9 +1001,14 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	 */
 	if (throttle_delayed_refs && total_delayed_refs &&
 	    (trans_type & __TRANS_START)) {
-		btrfs_throttle_for_delayed_refs(info,
-						&cur_trans->delayed_refs,
-						total_delayed_refs);
+		if (throttle && cur_trans->delayed_refs.flushing)
+			wait_event(info->transaction_wait,
+				   cur_trans->state >= TRANS_STATE_UNBLOCKED ||
+				   TRANS_ABORTED(cur_trans));
+		else
+			btrfs_throttle_for_delayed_refs(info,
+							&cur_trans->delayed_refs,
+							total_delayed_refs);
 	}
 	btrfs_put_transaction(cur_trans);
 

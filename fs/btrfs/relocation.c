@@ -788,15 +788,22 @@ static struct backref_node *build_backref_tree(struct reloc_control *rc,
 		goto out;
 	}
 
-	node = alloc_backref_node(cache);
-	if (!node) {
-		err = -ENOMEM;
-		goto out;
-	}
+	rb_node = tree_search(&cache->rb_root, bytenr);
+	if (rb_node) {
+		node = rb_entry(rb_node, struct backref_node, rb_node);
+		if (node->checked)
+			goto out;
+	} else {
+		node = alloc_backref_node(cache);
+		if (!node) {
+			err = -ENOMEM;
+			goto out;
+		}
 
-	node->bytenr = bytenr;
-	node->level = level;
-	node->lowest = 1;
+		node->bytenr = bytenr;
+		node->level = level;
+		node->lowest = 1;
+	}
 	cur = node;
 again:
 	end = 0;
@@ -3259,10 +3266,8 @@ int relocate_tree_blocks(struct btrfs_trans_handle *trans,
 		ret = relocate_tree_block(trans, rc, node, &block->key,
 					  path);
 		if (ret < 0) {
-			if (ret != -EAGAIN || &block->rb_node == rb_first(blocks))
-				err = ret;
-			goto out;
-//			goto out_free_path;
+			err = ret;
+			break;
 		}
 	}
 out:
@@ -4236,16 +4241,17 @@ restart:
 		if (!RB_EMPTY_ROOT(&blocks)) {
 			ret = relocate_tree_blocks(trans, rc, &blocks);
 			if (ret < 0) {
-				/*
-				 * if we fail to relocate tree blocks, force to update
-				 * backref cache when committing transaction.
-				 */
-				rc->backref_cache.last_trans = trans->transid - 1;
-
 				if (ret != -EAGAIN) {
 					err = ret;
 					break;
 				}
+
+				/*
+				 * We need update_backref_cache to handle any
+				 * pending nodes that are on our backref cache
+				 * when we loop around.
+				 */
+				rc->backref_cache.last_trans = trans->transid - 1;
 				rc->extents_found--;
 				rc->search_start = key.objectid;
 			}
