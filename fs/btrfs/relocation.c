@@ -4492,9 +4492,7 @@ int btrfs_relocate_block_group(struct btrfs_fs_info *fs_info, u64 group_start)
 	while (1) {
 		int finishes_stage;
 
-		mutex_lock(&fs_info->cleaner_mutex);
 		ret = relocate_block_group(rc);
-		mutex_unlock(&fs_info->cleaner_mutex);
 		if (ret < 0)
 			err = ret;
 
