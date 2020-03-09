@@ -4761,10 +4761,8 @@ static noinline int walk_down_proc(struct btrfs_trans_handle *trans,
 	if (!wc->drop_subtree &&
 	    btrfs_should_throttle_delayed_refs(fs_info,
 					       &trans->transaction->delayed_refs,
-					       false)) {
-		printk(KERN_ERR "throttling snap delete for delayed refs\n");
+					       false))
 		return -EAGAIN;
-	}
 
 	if (wc->stage == UPDATE_BACKREF &&
 	    btrfs_header_owner(eb) != root->root_key.objectid)
