@@ -899,7 +899,7 @@ static void btrfs_trans_release_metadata(struct btrfs_trans_handle *trans)
 static void noinline
 btrfs_throttle_for_delayed_refs(struct btrfs_fs_info *fs_info,
 				struct btrfs_delayed_ref_root *delayed_refs,
-				unsigned long refs)
+				unsigned long refs, bool throttle)
 {
 	unsigned long threshold = max(refs, 1UL) +
 		atomic_read(&delayed_refs->entries_run);
@@ -916,7 +916,7 @@ btrfs_throttle_for_delayed_refs(struct btrfs_fs_info *fs_info,
 
 	wait_event_interruptible(delayed_refs->wait,
 		 (atomic_read(&delayed_refs->entries_run) >= threshold) ||
-		 !btrfs_should_throttle_delayed_refs(fs_info, delayed_refs, false));
+		 !btrfs_should_throttle_delayed_refs(fs_info, delayed_refs, throttle));
 	if ((ktime_get_seconds() - start) > 1)
 		printk(KERN_ERR "we throttled for %llu seconds on %lu refs\n",
 		       ktime_get_seconds() - start, refs);
@@ -1008,7 +1008,7 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 	 */
 	if (throttle_delayed_refs && total_delayed_refs && (trans_type & __TRANS_START))
 		btrfs_throttle_for_delayed_refs(info, &cur_trans->delayed_refs,
-						total_delayed_refs);
+						total_delayed_refs, throttle);
 	btrfs_put_transaction(cur_trans);
 
 	return err;

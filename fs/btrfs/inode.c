@@ -4395,7 +4395,7 @@ delete:
 				 * everybody catch up.
 				 */
 				if (btrfs_should_throttle_delayed_refs(fs_info,
-					&cur_trans->delayed_refs, false) ||
+					&cur_trans->delayed_refs, true) ||
 				    cur_trans->delayed_refs.flushing) {
 					ret = -EAGAIN;
 					break;

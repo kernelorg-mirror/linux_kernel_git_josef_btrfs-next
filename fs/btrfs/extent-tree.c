@@ -4775,7 +4775,7 @@ static noinline int walk_down_proc(struct btrfs_trans_handle *trans,
 	if (!wc->drop_subtree &&
 	    btrfs_should_throttle_delayed_refs(fs_info,
 					       &trans->transaction->delayed_refs,
-					       false))
+					       true))
 		return -EAGAIN;
 
 	if (wc->stage == UPDATE_BACKREF &&
