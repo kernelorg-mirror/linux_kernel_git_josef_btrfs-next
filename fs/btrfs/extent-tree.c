@@ -2093,7 +2093,7 @@ static noinline int __btrfs_run_delayed_refs(struct btrfs_trans_handle *trans,
 		 * Once we've built up a fair bit of data, start decaying
 		 * everything by 3/4.
 		 */
-		if (fs_info->delayed_ref_runtime >= (NSEC_PER_SEC * 1000) &&
+		if (fs_info->delayed_ref_runtime >= (NSEC_PER_SEC * 1000ULL) &&
 		    fs_info->delayed_ref_nr_run > 1000) {
 			fs_info->delayed_ref_runtime *= 3;
 			fs_info->delayed_ref_runtime >>= 2;
