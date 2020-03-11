@@ -4772,7 +4772,16 @@ static noinline int walk_down_proc(struct btrfs_trans_handle *trans,
 	u64 flag = BTRFS_BLOCK_FLAG_FULL_BACKREF;
 	int ret;
 
+	/*
+	 * We only want to break if we aren't yet at the end of our leaf/node.
+	 * The reason for this is if we're at DROP_REFERENCE we'll grab the
+	 * current slot's key for the drop_progress.  If we're at the end this
+	 * will obviously go wrong.  We are also not going to generate many more
+	 * delayed refs at this point, so allowing us to continue will not hurt
+	 * us.
+	 */
 	if (!wc->drop_subtree &&
+	    (path->slots[level] < btrfs_header_nritems(path->nodes[level])) &&
 	    btrfs_should_throttle_delayed_refs(fs_info,
 					       &trans->transaction->delayed_refs,
 					       true))
