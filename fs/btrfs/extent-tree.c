@@ -5257,6 +5257,7 @@ int btrfs_drop_snapshot(struct btrfs_root *root,
 	 * already dropped.
 	 */
 	set_bit(BTRFS_ROOT_DELETING, &root->state);
+again:
 	if (btrfs_disk_key_objectid(&root_item->drop_progress) == 0) {
 		level = btrfs_header_level(root->node);
 		path->nodes[level] = btrfs_lock_root_node(root);
@@ -5269,7 +5270,9 @@ int btrfs_drop_snapshot(struct btrfs_root *root,
 		btrfs_disk_key_to_cpu(&key, &root_item->drop_progress);
 		memcpy(&wc->update_progress, &key,
 		       sizeof(wc->update_progress));
+		memcpy(&wc->drop_progress, &key, sizeof(key));
 
+		wc->drop_level = root_item->drop_level;
 		level = root_item->drop_level;
 		BUG_ON(level == 0);
 		path->lowest_level = level;
@@ -5362,6 +5365,18 @@ int btrfs_drop_snapshot(struct btrfs_root *root,
 				goto out_end_trans;
 			}
 
+			/*
+			 * We used to keep the path open until we completed the
+			 * snapshot delete.  However this can deadlock with
+			 * things like backref walking that may want to resolve
+			 * references that still point to this deleted root.  We
+			 * already have the ability to restart snapshot
+			 * deletions on mount, so just clear our walk_control,
+			 * drop the path, and go to the beginning and re-lookup
+			 * our drop_progress key and continue from there.
+			 */
+			memset(wc, 0, sizeof(*wc));
+			btrfs_release_path(path);
 			btrfs_end_transaction_throttle(trans);
 			if (!for_reloc && btrfs_need_cleaner_sleep(fs_info)) {
 				btrfs_debug(fs_info,
@@ -5377,6 +5392,7 @@ int btrfs_drop_snapshot(struct btrfs_root *root,
 			}
 			if (block_rsv)
 				trans->block_rsv = block_rsv;
+			goto again;
 		}
 	}
 	btrfs_release_path(path);
