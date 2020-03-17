@@ -4775,7 +4775,7 @@ static noinline int walk_down_proc(struct btrfs_trans_handle *trans,
 	 * delayed refs at this point, so allowing us to continue will not hurt
 	 * us.
 	 */
-	if (!wc->drop_subtree &&
+	if (!wc->drop_subtree && level &&
 	    (path->slots[level] < btrfs_header_nritems(path->nodes[level])) &&
 	    btrfs_should_throttle_delayed_refs(fs_info,
 					       &trans->transaction->delayed_refs,
@@ -5246,8 +5246,9 @@ static noinline int walk_up_tree(struct btrfs_trans_handle *trans,
 	path->slots[level] = btrfs_header_nritems(path->nodes[level]);
 	while (level < max_level && path->nodes[level]) {
 		wc->level = level;
-		if (path->slots[level] + 1 <
-		    btrfs_header_nritems(path->nodes[level])) {
+		if (level &&
+		    (path->slots[level] + 1 <
+		     btrfs_header_nritems(path->nodes[level]))) {
 			path->slots[level]++;
 			return 0;
 		} else {
