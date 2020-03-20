@@ -4509,6 +4509,7 @@ static long btrfs_ioctl_logical_to_ino(struct btrfs_fs_info *fs_info,
 		goto out;
 	}
 	path->search_commit_root = 1;
+	path->skip_locking = 1;
 
 	inodes = init_data_container(size);
 	if (IS_ERR(inodes)) {
