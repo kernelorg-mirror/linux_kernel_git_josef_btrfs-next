@@ -16,6 +16,11 @@
 #define BTRFS_WRITE_LOCK_BLOCKING 3
 #define BTRFS_READ_LOCK_BLOCKING 4
 
+/*
+ * We are limited in number of subclasses by MAX_LOCKDEP_SUBCLASSES, which at
+ * the time of this patch is 8, which is how many we're using here.  Keep this
+ * in mind if you decide you want to add another subclass.
+ */
 enum btrfs_lock_nesting {
 	BTRFS_NESTING_NORMAL,
 
@@ -55,6 +60,15 @@ enum btrfs_lock_nesting {
 	 * handle this case where we need to allocate a new split block.
 	 */
 	BTRFS_NESTING_SPLIT,
+
+	/*
+	 * When promoting a new block to a root we need to have a special
+	 * subclass so we don't confuse lockdep, as it will appear that we are
+	 * locking a higher level node before a lower level one.  Copying also
+	 * has this problem as it appears we're locking the same block again
+	 * when we make a snapshot of an existing root.
+	 */
+	BTRFS_NESTING_NEW_ROOT,
 
 	/*
 	 * We are limited to MAX_LOCKDEP_SUBLCLASSES number of subclasses, so
