@@ -548,6 +548,7 @@ static ssize_t proc_sys_call_handler(struct file *filp, void __user *ubuf,
 	struct ctl_table *table = PROC_I(inode)->sysctl_entry;
 	void *kbuf;
 	ssize_t error;
+	size_t orig_count = count;
 
 	if (IS_ERR(head))
 		return PTR_ERR(head);
@@ -577,9 +578,23 @@ static ssize_t proc_sys_call_handler(struct file *filp, void __user *ubuf,
 			goto out;
 		}
 	} else {
-		kbuf = kvzalloc(count, GFP_KERNEL);
+		/*
+		 * To make our lives easier in ->proc_handler, we allocate an
+		 * extra byte to allow us to use scnprintf() for handling the
+		 * buffer output.  This works properly because scnprintf() will
+		 * only return the number of bytes that it was able to write
+		 * out, _NOT_ including the NULL byte.  This means the handler's
+		 * will only ever return a maximum of count as what they've
+		 * copied.
+		 *
+		 * HOWEVER, we do not assume that ->proc_handlers are without
+		 * bugs, so further down we'll do an extra check to make sure
+		 * that count isn't larger than the orig_count.
+		 */
+		kbuf = kvzalloc(count + 1, GFP_KERNEL);
 		if (!kbuf)
 			goto out;
+		count += 1;
 	}
 
 	error = BPF_CGROUP_RUN_PROG_SYSCTL(head, table, write, &kbuf, &count,
@@ -593,6 +608,13 @@ static ssize_t proc_sys_call_handler(struct file *filp, void __user *ubuf,
 		goto out_free_buf;
 
 	if (!write) {
+		/*
+		 * This shouldn't happen, but those are the last words before
+		 * somebody adds a security vulnerability, so just make sure
+		 * that count isn't larger than orig_count.
+		 */
+		if (count > orig_count)
+			count = orig_count;
 		error = -EFAULT;
 		if (copy_to_user(ubuf, kbuf, count))
 			goto out_free_buf;
