@@ -209,6 +209,33 @@ void *vmemdup_user(const void __user *src, size_t len)
 EXPORT_SYMBOL(vmemdup_user);
 
 /**
+ * kvmemdup_user_nul - duplicate memory region from user space and NUL-terminate
+ *
+ * @src: source address in user space
+ * @len: number of bytes to copy
+ *
+ * Return: an ERR_PTR() on failure.  Result may be not
+ * physically contiguous.  Use kvfree() to free.
+ */
+void *kvmemdup_user_nul(const void __user *src, size_t len)
+{
+	char *p;
+
+	p = kvmalloc(len + 1, GFP_USER);
+	if (!p)
+		return ERR_PTR(-ENOMEM);
+
+	if (copy_from_user(p, src, len)) {
+		kvfree(p);
+		return ERR_PTR(-EFAULT);
+	}
+	p[len] = '\0';
+
+	return p;
+}
+EXPORT_SYMBOL(kvmemdup_user_nul);
+
+/**
  * strndup_user - duplicate an existing string from user space
  * @s: The string to duplicate
  * @n: Maximum number of bytes to copy, including the trailing NUL.
