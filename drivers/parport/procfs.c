@@ -37,9 +37,8 @@ static int do_active_device(struct ctl_table *table, int write,
 		      void *result, size_t *lenp, loff_t *ppos)
 {
 	struct parport *port = (struct parport *)table->extra1;
-	char buffer[256];
 	struct pardevice *dev;
-	int len = 0;
+	size_t ret = 0;
 
 	if (write)		/* can't happen anyway */
 		return -EACCES;
@@ -48,24 +47,19 @@ static int do_active_device(struct ctl_table *table, int write,
 		*lenp = 0;
 		return 0;
 	}
-	
+
 	for (dev = port->devices; dev ; dev = dev->next) {
 		if(dev == port->cad) {
-			len += sprintf(buffer, "%s\n", dev->name);
+			ret += scnprintf(result + ret, *lenp - ret, "%s\n",
+					 dev->name);
 		}
 	}
 
-	if(!len) {
-		len += sprintf(buffer, "%s\n", "none");
-	}
+	if (!ret)
+		ret = scnprintf(result, *lenp, "%s\n", "none");
 
-	if (len > *lenp)
-		len = *lenp;
-	else
-		*lenp = len;
-
-	*ppos += len;
-	memcpy(result, buffer, len);
+	*lenp = ret;
+	*ppos += ret;
 	return 0;
 }
 
@@ -75,8 +69,7 @@ static int do_autoprobe(struct ctl_table *table, int write,
 {
 	struct parport_device_info *info = table->extra2;
 	const char *str;
-	char buffer[256];
-	int len = 0;
+	size_t ret = 0;
 
 	if (write) /* permissions stop this */
 		return -EACCES;
@@ -85,30 +78,24 @@ static int do_autoprobe(struct ctl_table *table, int write,
 		*lenp = 0;
 		return 0;
 	}
-	
+
 	if ((str = info->class_name) != NULL)
-		len += sprintf (buffer + len, "CLASS:%s;\n", str);
+		ret += scnprintf(result + ret, *lenp - ret, "CLASS:%s;\n", str);
 
 	if ((str = info->model) != NULL)
-		len += sprintf (buffer + len, "MODEL:%s;\n", str);
+		ret += scnprintf(result + ret, *lenp - ret, "MODEL:%s;\n", str);
 
 	if ((str = info->mfr) != NULL)
-		len += sprintf (buffer + len, "MANUFACTURER:%s;\n", str);
+		ret += scnprintf(result + ret, *lenp - ret, "MANUFACTURER:%s;\n", str);
 
 	if ((str = info->description) != NULL)
-		len += sprintf (buffer + len, "DESCRIPTION:%s;\n", str);
+		ret += scnprintf(result + ret, *lenp - ret, "DESCRIPTION:%s;\n", str);
 
 	if ((str = info->cmdset) != NULL)
-		len += sprintf (buffer + len, "COMMAND SET:%s;\n", str);
+		ret += scnprintf(result + ret, *lenp - ret, "COMMAND SET:%s;\n", str);
 
-	if (len > *lenp)
-		len = *lenp;
-	else
-		*lenp = len;
-
-	*ppos += len;
-
-	memcpy(result, buffer, len);
+	*lenp = ret;
+	*ppos += ret;
 	return 0;
 }
 #endif /* IEEE1284.3 support. */
@@ -117,8 +104,7 @@ static int do_hardware_base_addr(struct ctl_table *table, int write,
 				 void *result, size_t *lenp, loff_t *ppos)
 {
 	struct parport *port = (struct parport *)table->extra1;
-	char buffer[20];
-	int len = 0;
+	size_t ret;
 
 	if (*ppos) {
 		*lenp = 0;
@@ -128,15 +114,10 @@ static int do_hardware_base_addr(struct ctl_table *table, int write,
 	if (write) /* permissions prevent this anyway */
 		return -EACCES;
 
-	len += sprintf (buffer, "%lu\t%lu\n", port->base, port->base_hi);
-
-	if (len > *lenp)
-		len = *lenp;
-	else
-		*lenp = len;
-
-	*ppos += len;
-	memcpy(result, buffer, len);
+	ret = scnprintf(result, *lenp, "%lu\t%lu\n", port->base,
+			port->base_hi);
+	*lenp = ret;
+	*ppos += ret;
 	return 0;
 }
 
@@ -144,8 +125,7 @@ static int do_hardware_irq(struct ctl_table *table, int write,
 			   void *result, size_t *lenp, loff_t *ppos)
 {
 	struct parport *port = (struct parport *)table->extra1;
-	char buffer[20];
-	int len = 0;
+	size_t ret;
 
 	if (*ppos) {
 		*lenp = 0;
@@ -155,15 +135,10 @@ static int do_hardware_irq(struct ctl_table *table, int write,
 	if (write) /* permissions prevent this anyway */
 		return -EACCES;
 
-	len += sprintf (buffer, "%d\n", port->irq);
+	ret = scnprintf(result, *lenp, "%d\n", port->irq);
 
-	if (len > *lenp)
-		len = *lenp;
-	else
-		*lenp = len;
-
-	*ppos += len;
-	memcpy(result, buffer, len);
+	*lenp = ret;
+	*ppos += ret;
 	return 0;
 }
 
@@ -171,8 +146,7 @@ static int do_hardware_dma(struct ctl_table *table, int write,
 			   void *result, size_t *lenp, loff_t *ppos)
 {
 	struct parport *port = (struct parport *)table->extra1;
-	char buffer[20];
-	int len = 0;
+	size_t ret;
 
 	if (*ppos) {
 		*lenp = 0;
@@ -182,15 +156,10 @@ static int do_hardware_dma(struct ctl_table *table, int write,
 	if (write) /* permissions prevent this anyway */
 		return -EACCES;
 
-	len += sprintf (buffer, "%d\n", port->dma);
+	ret = scnprintf(result, *lenp, "%d\n", port->dma);
 
-	if (len > *lenp)
-		len = *lenp;
-	else
-		*lenp = len;
-
-	*ppos += len;
-	memcpy(result, buffer, len);
+	*lenp = ret;
+	*ppos += ret;
 	return 0;
 }
 
@@ -198,8 +167,7 @@ static int do_hardware_modes(struct ctl_table *table, int write,
 			     void *result, size_t *lenp, loff_t *ppos)
 {
 	struct parport *port = (struct parport *)table->extra1;
-	char buffer[40];
-	int len = 0;
+	size_t ret = 0;
 
 	if (*ppos) {
 		*lenp = 0;
@@ -213,7 +181,8 @@ static int do_hardware_modes(struct ctl_table *table, int write,
 #define printmode(x)							\
 do {									\
 	if (port->modes & PARPORT_MODE_##x)				\
-		len += sprintf(buffer + len, "%s%s", f++ ? "," : "", #x); \
+		ret += scnprintf(result + ret, *lenp - ret,		\
+				 "%s%s", f++ ? "," : "", #x);		\
 } while (0)
 		int f = 0;
 		printmode(PCSPP);
@@ -224,15 +193,10 @@ do {									\
 		printmode(DMA);
 #undef printmode
 	}
-	buffer[len++] = '\n';
+	ret += scnprintf(result + ret, *lenp - ret, "\n");
 
-	if (len > *lenp)
-		len = *lenp;
-	else
-		*lenp = len;
-
-	*ppos += len;
-	memcpy(result, buffer, len);
+	*lenp = ret;
+	*ppos += ret;
 	return 0;
 }
 
