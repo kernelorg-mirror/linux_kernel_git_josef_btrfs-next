@@ -484,6 +484,7 @@ static int proc_get_long(char **buf, size_t *size,
 
 	return 0;
 }
+#undef TMPBUFLEN
 
 /**
  * proc_put_long - converts an integer to a decimal ASCII formatted string
@@ -498,18 +499,12 @@ static int proc_get_long(char **buf, size_t *size,
  */
 static void proc_put_long(void **buf, size_t *size, unsigned long val, bool neg)
 {
-	int len;
-	char tmp[TMPBUFLEN], *p = tmp;
+	size_t ret;
 
-	sprintf(p, "%s%lu", neg ? "-" : "", val);
-	len = strlen(tmp);
-	if (len > *size)
-		len = *size;
-	memcpy(*buf, tmp, len);
-	*size -= len;
-	*buf += len;
+	ret = scnprintf(*buf, *size, "%s%lu", neg ? "-" : "", val);
+	*size -= ret;
+	*buf += ret;
 }
-#undef TMPBUFLEN
 
 static void proc_put_char(void **buf, size_t *size, char c)
 {
