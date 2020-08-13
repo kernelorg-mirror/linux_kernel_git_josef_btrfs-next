@@ -90,20 +90,8 @@ static int read_reset_stat(struct ctl_table *table, int write,
 	if (write)
 		atomic_set(stat, 0);
 	else {
-		char str_buf[32];
-		int len = snprintf(str_buf, 32, "%d\n", atomic_read(stat));
-		if (len >= 32)
-			return -EFAULT;
-		len = strlen(str_buf);
-		if (*ppos > len) {
-			*lenp = 0;
-			return 0;
-		}
-		len -= *ppos;
-		if (len > *lenp)
-			len = *lenp;
-		if (len)
-			memcpy(buffer, str_buf, len);
+		size_t len = scnprintf(buffer, *lenp, "%d\n",
+				       atomic_read(stat));
 		*lenp = len;
 		*ppos += len;
 	}

@@ -117,14 +117,8 @@ proc_dodebug(struct ctl_table *table, int write, void *buffer, size_t *lenp,
 		if (strcmp(table->procname, "rpc_debug") == 0)
 			rpc_show_tasks(&init_net);
 	} else {
-		len = sprintf(tmpbuf, "0x%04x", *(unsigned int *) table->data);
-		if (len > left)
-			len = left;
-		memcpy(buffer, tmpbuf, len);
-		if ((left -= len) > 0) {
-			*((char *)buffer + len) = '\n';
-			left--;
-		}
+		len = scnprintf(buffer, *lenp, "0x%04x\n", *(unsigned int *) table->data);
+		left -= len;
 	}
 
 done:
