@@ -717,16 +717,18 @@ static noinline int create_subvol(struct inode *dir,
 	btrfs_record_root_in_trans(trans, new_root);
 
 	ret = btrfs_create_subvol_root(trans, new_root, root, new_dirid);
+	if (!ret) {
+		mutex_lock(&new_root->objectid_mutex);
+		new_root->highest_objectid = new_dirid;
+		mutex_unlock(&new_root->objectid_mutex);
+	}
+
 	btrfs_put_root(new_root);
 	if (ret) {
 		/* We potentially lose an unused inode item here */
 		btrfs_abort_transaction(trans, ret);
 		goto fail;
 	}
-
-	mutex_lock(&new_root->objectid_mutex);
-	new_root->highest_objectid = new_dirid;
-	mutex_unlock(&new_root->objectid_mutex);
 
 	/*
 	 * insert the directory item
